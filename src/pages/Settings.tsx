@@ -1,4 +1,4 @@
-import { Settings as SettingsIcon, Moon, Globe, FolderOpen, Shield, Save } from 'lucide-react';
+import { Moon, FolderOpen, Shield, Save } from 'lucide-react';
 import './PageCommon.css';
 
 export default function SettingsPage() {
@@ -47,19 +47,20 @@ export default function SettingsPage() {
 
         <div className="card">
           <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Shield size={18} /> Harness 安全
+            <Shield size={18} /> Harness 执行约束
           </h3>
           <div className="settings-row">
             <label>Shell 命令确认</label>
-            <select defaultValue="ask">
+            <select defaultValue="agent">
               <option value="ask">每次询问</option>
+              <option value="agent">Agent 自主判断</option>
               <option value="auto">自动执行（危险）</option>
               <option value="deny">全部拒绝</option>
             </select>
           </div>
           <div className="settings-row">
             <label>Token 预算 (每次会话)</label>
-            <input type="number" defaultValue={100000} style={{ width: 150 }} />
+            <input type="number" defaultValue={10000000} style={{ width: 180 }} />
           </div>
         </div>
 

@@ -1,11 +1,11 @@
-import { Server, Plus, CheckCircle2, Key, Globe } from 'lucide-react';
+import { Plus, CheckCircle2, Key, Globe } from 'lucide-react';
 import './PageCommon.css';
 
 const providers = [
-  { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini'], status: 'active', keySet: true },
+  { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', models: ['gpt-5.4', 'gpt-5.4-mini'], status: 'active', keySet: true },
   { name: 'Anthropic', endpoint: 'https://api.anthropic.com/v1', models: ['claude-opus-4-6', 'claude-sonnet-4-6'], status: 'active', keySet: true },
-  { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-coder'], status: 'active', keySet: true },
-  { name: 'Ollama', endpoint: 'http://localhost:11434', models: ['qwen2.5:72b', 'codellama'], status: 'inactive', keySet: false },
+  { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1', models: ['deepseek-v3.2', 'deepseek-coder-v3'], status: 'active', keySet: true },
+  { name: 'Ollama', endpoint: 'http://localhost:11434', models: ['qwen-3:72b', 'llama-4'], status: 'inactive', keySet: false },
 ];
 
 export default function Providers() {

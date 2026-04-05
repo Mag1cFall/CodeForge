@@ -47,7 +47,7 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const contextUsed = 4200;
-  const contextMax = 128000;
+  const contextMax = 1000000;
   const contextPercent = Math.round((contextUsed / contextMax) * 100);
 
   useEffect(() => {
@@ -211,7 +211,7 @@ export default function Chat() {
             </div>
             <div className="context-details">
               <div><Gauge size={12} /> 压缩: 自动</div>
-              <div><Bot size={12} /> Model: claude-sonnet-4-6</div>
+              <div><Bot size={12} /> Model: claude-sonnet-4-6 (1M ctx)</div>
             </div>
           </div>
 

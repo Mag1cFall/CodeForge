@@ -4,9 +4,9 @@ import './PageCommon.css';
 const agents = [
   { name: 'Orchestrator', role: '编排者', status: 'running', model: 'claude-opus-4-6', tasks: 12 },
   { name: 'Reviewer', role: '审查者', status: 'running', model: 'claude-sonnet-4-6', tasks: 89 },
-  { name: 'Refactorer', role: '重构者', status: 'idle', model: 'gpt-4o', tasks: 34 },
-  { name: 'Researcher', role: '研究者', status: 'running', model: 'gemini-2.5-pro', tasks: 56 },
-  { name: 'Executor', role: '执行者', status: 'stopped', model: 'deepseek-v3', tasks: 23 },
+  { name: 'Refactorer', role: '重构者', status: 'idle', model: 'gpt-5.4', tasks: 34 },
+  { name: 'Researcher', role: '研究者', status: 'running', model: 'gemini-3.1-pro', tasks: 56 },
+  { name: 'Executor', role: '执行者', status: 'stopped', model: 'deepseek-v3.2', tasks: 23 },
 ];
 
 export default function Agents() {
