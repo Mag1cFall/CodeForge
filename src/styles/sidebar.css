@@ -4,13 +4,14 @@
   top: 0;
   bottom: 0;
   width: var(--sidebar-width);
-  background: var(--gradient-sidebar);
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
   z-index: var(--z-sidebar);
   transition: width var(--transition-slow);
   overflow: hidden;
+  white-space: nowrap;
 }
 
 .sidebar.collapsed {
@@ -97,11 +98,12 @@
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   font-size: 14px;
-  font-weight: 450;
+  font-weight: 500;
   transition: all var(--transition-fast);
   cursor: pointer;
   text-decoration: none;
   position: relative;
+  overflow: hidden;
 }
 
 .nav-item:hover {
