@@ -114,10 +114,6 @@ export default function TopBar() {
           <Moon className="icon-moon" size={18} />
         </button>
 
-        <div className="topbar-status">
-          <div className="topbar-status-dot" />
-          <span>系统就绪</span>
-        </div>
       </div>
     </header>
   );

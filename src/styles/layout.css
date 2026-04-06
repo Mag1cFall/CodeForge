@@ -226,3 +226,61 @@
   overflow-y: auto;
   padding: 32px 40px;
 }
+
+@media (max-width: 1200px) {
+  .layout-content {
+    padding: 24px 24px;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    width: var(--sidebar-collapsed);
+  }
+  .sidebar .sidebar-brand {
+    opacity: 0;
+    width: 0;
+    pointer-events: none;
+  }
+  .sidebar .nav-section-label {
+    opacity: 0;
+    height: 0;
+    padding: 0;
+  }
+  .sidebar .nav-item-label {
+    opacity: 0;
+    width: 0;
+    position: absolute;
+    pointer-events: none;
+  }
+  .sidebar .nav-item {
+    padding: 10px 0;
+    justify-content: center;
+  }
+  .sidebar .sidebar-toggle span {
+    display: none;
+  }
+  .layout-content {
+    padding: 16px 16px;
+  }
+  .topbar {
+    padding: 0 16px;
+  }
+  .topbar-breadcrumb span:first-child,
+  .topbar-breadcrumb span:nth-child(2) {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .layout-content {
+    padding: 12px 8px;
+  }
+  .topbar-popover {
+    width: 280px;
+    right: -40px;
+  }
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+}
