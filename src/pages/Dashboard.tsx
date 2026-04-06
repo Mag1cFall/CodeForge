@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import {
   MessageSquare, Bot, Wrench, Zap, BookOpen, Activity,
   ArrowUpRight, Clock, TrendingUp, Flame
@@ -20,12 +21,22 @@ const recentActivities = [
 ];
 
 const quickActions = [
-  { label: '开始代码审查', icon: MessageSquare, gradient: 'var(--gradient-primary)' },
-  { label: '添加 MCP 服务', icon: Activity, gradient: 'var(--gradient-secondary)' },
-  { label: '配置新模型', icon: TrendingUp, gradient: 'var(--gradient-success)' },
+  { label: '开始代码审查', icon: MessageSquare, gradient: 'var(--gradient-primary)', path: '/review' },
+  { label: '添加 MCP 服务', icon: Activity, gradient: 'var(--gradient-secondary)', path: '/mcp' },
+  { label: '配置新模型', icon: TrendingUp, gradient: 'var(--gradient-success)', path: '/providers' },
 ];
 
+const archRoutes: Record<string, string> = {
+  Agent: '/agents',
+  MCP: '/mcp',
+  Skill: '/skills',
+  Tool: '/tools',
+  RAG: '/knowledge',
+  Harness: '/review',
+};
+
 export default function Dashboard() {
+  const navigate = useNavigate();
   return (
     <div className="dashboard animate-in">
       <div className="page-header">
@@ -66,7 +77,12 @@ export default function Dashboard() {
           </h3>
           <div className="activity-list">
             {recentActivities.map((a, i) => (
-              <div key={i} className="activity-item" style={{ animationDelay: `${i * 0.05}s` }}>
+              <div 
+                key={i} 
+                className="activity-item" 
+                style={{ animationDelay: `${i * 0.05}s`, cursor: 'pointer' }}
+                onClick={() => navigate('/logs')}
+              >
                 <div className={`activity-dot activity-dot-${a.status}`} />
                 <div className="activity-info">
                   <span className="activity-agent">{a.agent}</span>
@@ -82,7 +98,7 @@ export default function Dashboard() {
           <h3>快速操作</h3>
           <div className="quick-actions">
             {quickActions.map((action, i) => (
-              <button key={i} className="quick-action-btn">
+              <button key={i} className="quick-action-btn" onClick={() => navigate(action.path)}>
                 <div className="quick-action-icon" style={{ background: action.gradient }}>
                   <action.icon size={20} color="white" />
                 </div>
@@ -96,7 +112,7 @@ export default function Dashboard() {
             <h4>系统架构</h4>
             <div className="arch-modules">
               {['Agent', 'MCP', 'Skill', 'Tool', 'RAG', 'Harness'].map((m) => (
-                <div key={m} className="arch-module">{m}</div>
+                <div key={m} className="arch-module" style={{ cursor: 'pointer' }} onClick={() => navigate(archRoutes[m] || '/')}>{m}</div>
               ))}
             </div>
           </div>

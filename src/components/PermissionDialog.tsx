@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-import { ShieldAlert, Check, X, AlertTriangle, Terminal } from 'lucide-react';
+import { ShieldAlert, Check, X, Terminal } from 'lucide-react';
 import './PermissionDialog.css';
 
 export interface PermissionRequest {
@@ -50,10 +49,10 @@ export default function PermissionDialog({ request, onApprove, onDeny }: Props) 
         </div>
 
         <div className="perm-actions">
-          <button className="btn btn-danger" onClick={() => onDeny(request.id)}>
+          <button type="button" className="btn btn-danger" onClick={() => onDeny(request.id)}>
             <X size={16} /> 拒绝
           </button>
-          <button className="btn btn-primary" onClick={() => onApprove(request.id)}>
+          <button type="button" className="btn btn-primary" onClick={() => onApprove(request.id)}>
             <Check size={16} /> 允许执行
           </button>
         </div>

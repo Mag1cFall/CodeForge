@@ -70,14 +70,14 @@
 }
 
 [data-theme='light'] {
-  /* Ultra-Premium Light Theme */
-  --bg-primary: #fafafa;
+  /* Ultra-Premium Light Theme (Eye-Friendly) */
+  --bg-primary: #f8f9fa;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #f1f1f1;
+  --bg-tertiary: #f1f3f5;
   --bg-card: #ffffff;
-  --bg-card-hover: #fafafa;
+  --bg-card-hover: #f8f9fa;
   --bg-input: #ffffff;
-  --bg-sidebar: #fafafa;
+  --bg-sidebar: #f8f9fa;
   --bg-overlay: rgba(0, 0, 0, 0.4);
 
   --border-primary: #eaeaea;
@@ -93,4 +93,15 @@
   --shadow-lg: 0 12px 24px rgba(0,0,0,0.08);
   
   --gradient-sidebar: none;
+}
+
+.theme-transitioning *,
+.theme-transitioning *::before,
+.theme-transitioning *::after {
+  transition:
+    background-color 0.4s ease,
+    border-color 0.4s ease,
+    color 0.3s ease,
+    box-shadow 0.4s ease,
+    background 0.4s ease !important;
 }

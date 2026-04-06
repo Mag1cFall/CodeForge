@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Send, Bot, User, Loader2, Paperclip, Sparkles, RotateCcw, Copy, Wrench,
-  PanelRightOpen, PanelRightClose, Plus, MessageSquare, Gauge, Layers
+  PanelRightOpen, PanelRightClose, Plus, MessageSquare, Gauge, Layers,
+  Settings2, Thermometer
 } from 'lucide-react';
 import PermissionDialog, { PermissionRequest } from '../components/PermissionDialog';
 import './Chat.css';
@@ -44,6 +45,12 @@ export default function Chat() {
   const [showPanel, setShowPanel] = useState(true);
   const [activeSession, setActiveSession] = useState('1');
   const [permRequest, setPermRequest] = useState<PermissionRequest | null>(null);
+  const [provider, setProvider] = useState('anthropic');
+  const [model, setModel] = useState('claude-sonnet-4-6');
+  const [temperature, setTemperature] = useState(0.7);
+  const [topP, setTopP] = useState(0.9);
+  const [maxTokens, setMaxTokens] = useState(64000);
+  const [streaming, setStreaming] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const contextUsed = 4200;
@@ -212,6 +219,59 @@ export default function Chat() {
             <div className="context-details">
               <div><Gauge size={12} /> 压缩: 自动</div>
               <div><Bot size={12} /> Model: claude-sonnet-4-6 (1M ctx)</div>
+            </div>
+          </div>
+
+          <div className="chat-sidebar-section">
+            <div className="chat-sidebar-header">
+              <Settings2 size={16} />
+              <span>模型配置</span>
+            </div>
+            <div className="chat-config">
+              <label>Provider</label>
+              <select value={provider} onChange={e => { setProvider(e.target.value); setModel(''); }}>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="ollama">Ollama</option>
+              </select>
+            </div>
+            <div className="chat-config">
+              <label>Model</label>
+              <select value={model} onChange={e => setModel(e.target.value)}>
+                {provider === 'anthropic' && <><option value="claude-opus-4-6">claude-opus-4-6</option><option value="claude-sonnet-4-6">claude-sonnet-4-6</option></>}
+                {provider === 'openai' && <><option value="gpt-5.4">gpt-5.4</option><option value="gpt-5.4-mini">gpt-5.4-mini</option></>}
+                {provider === 'deepseek' && <><option value="deepseek-v3.2">deepseek-v3.2</option><option value="deepseek-coder-v3">deepseek-coder-v3</option></>}
+                {provider === 'ollama' && <><option value="qwen-3:72b">qwen-3:72b</option><option value="llama-4">llama-4</option></>}
+              </select>
+            </div>
+            <div className="chat-config">
+              <div className="chat-config-row">
+                <label><Thermometer size={12} /> Temperature</label>
+                <span>{temperature.toFixed(2)}</span>
+              </div>
+              <input type="range" min="0" max="2" step="0.05" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} />
+            </div>
+            <div className="chat-config">
+              <div className="chat-config-row">
+                <label>Top P</label>
+                <span>{topP.toFixed(2)}</span>
+              </div>
+              <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} />
+            </div>
+            <div className="chat-config">
+              <div className="chat-config-row">
+                <label>Max Tokens</label>
+                <input type="number" value={maxTokens} onChange={e => setMaxTokens(parseInt(e.target.value) || 0)} style={{ width: 80, textAlign: 'right', padding: '2px 6px', fontSize: 12, background: 'var(--bg-input)', border: '1px solid var(--border-primary)', borderRadius: 4, color: 'var(--text-primary)' }} />
+              </div>
+            </div>
+            <div className="chat-config">
+              <div className="chat-config-row">
+                <label>Streaming</label>
+                <button className={`toggle-btn ${streaming ? 'on' : ''}`} onClick={() => setStreaming(!streaming)}>
+                  <span className="toggle-knob" />
+                </button>
+              </div>
             </div>
           </div>
 

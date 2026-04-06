@@ -1,7 +1,7 @@
 .chat-page {
   display: flex;
-  height: calc(100vh - var(--topbar-height) - 56px);
-  margin: -28px -32px;
+  height: calc(100vh - var(--topbar-height));
+  margin: -32px -40px;
 }
 
 .chat-main {
@@ -186,3 +186,89 @@
 .session-item.active { background: rgba(59, 130, 246, 0.1); border-left: 3px solid var(--accent-blue); }
 .session-title { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .session-meta { font-size: 11px; color: var(--text-tertiary); }
+
+.chat-config {
+  margin-bottom: 10px;
+}
+.chat-config label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.chat-config select {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  color: var(--text-primary);
+  outline: none;
+}
+.chat-config select:focus {
+  border-color: var(--accent-blue);
+}
+.chat-config input[type="range"] {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  outline: none;
+}
+.chat-config input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  cursor: pointer;
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 0 4px rgba(59,130,246,0.4);
+}
+.chat-config-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.chat-config-row span {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.toggle-btn {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  padding: 0;
+}
+.toggle-btn.on {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: var(--accent-blue);
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: all var(--transition-fast);
+}
+.toggle-btn.on .toggle-knob {
+  left: 18px;
+  background: var(--accent-blue-light);
+}

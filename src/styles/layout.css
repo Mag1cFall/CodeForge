@@ -6,15 +6,10 @@
 
 .layout-main {
   flex: 1;
-  padding-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
   min-width: 0;
-  transition: padding-left var(--transition-slow);
-}
-
-.layout-main.sidebar-collapsed {
-  padding-left: var(--sidebar-collapsed);
+  position: relative;
 }
 
 .topbar {

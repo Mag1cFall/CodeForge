@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, MessageSquare, SearchCode, Bot,
   Wrench, Plug, Zap, BookOpen, Server, ScrollText,
@@ -47,8 +46,6 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const location = useLocation();
-
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <div className="sidebar-header">
@@ -83,7 +80,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </nav>
 
       <div className="sidebar-footer">
-        <button className="sidebar-toggle" onClick={onToggle}>
+        <button type="button" className="sidebar-toggle" onClick={onToggle}>
           {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
           {!collapsed && <span>收起侧栏</span>}
         </button>

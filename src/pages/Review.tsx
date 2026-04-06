@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import {
-  SearchCode, FolderOpen, GitBranch, Play, Loader2,
+  SearchCode, FolderOpen, GitBranch, Play,
   AlertTriangle, CheckCircle2, XCircle, ChevronRight,
-  Shield, Box, FileCode, ArrowRight, RotateCcw,
+  Shield, Box, FileCode, RotateCcw,
   Download, ClipboardCopy, Settings2
 } from 'lucide-react';
 import './Review.css';
@@ -21,7 +21,7 @@ const mockIssues = [
 const sandboxLogs = [
   { time: '00:00.0', msg: '🔒 沙箱环境初始化...' },
   { time: '00:00.2', msg: '📁 挂载项目目录 (只读)' },
-  { time: '00:00.5', msg: '🤖 Reviewer Agent 启动' },
+  { time: '00:00.5', msg: '[Agent] Reviewer Agent 启动' },
   { time: '00:01.2', msg: '🔧 Tool: list_directory → 42 files found' },
   { time: '00:02.8', msg: '🔧 Tool: analyze_ast → src/main.rs (CC=15)' },
   { time: '00:04.1', msg: '🔧 Tool: find_code_smells → 6 issues detected' },
@@ -55,7 +55,7 @@ export default function Review() {
   return (
     <div className="review-page animate-in">
       <div className="page-header">
-        <h1>🔍 代码审查</h1>
+        <h1><SearchCode size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 代码审查</h1>
         <p>Agent 驱动的代码质量分析 · 沙箱隔离执行 · 完整审查报告输出</p>
       </div>
 
@@ -70,27 +70,55 @@ export default function Review() {
 
       {phase === 'select' && (
         <div className="review-select">
-          <div className="card review-option" onClick={() => { setProjectPath('C:\\Users\\l\\Desktop\\数据挖掘\\codeforge'); setPhase('configure'); }}>
+          <div className="card review-option" onClick={async () => {
+            try {
+              const { open } = await import('@tauri-apps/plugin-dialog');
+              const selected = await open({ directory: true });
+              if (selected && typeof selected === 'string') {
+                setProjectPath(selected);
+              }
+            } catch {
+              console.warn('plugin-dialog failed, please enter manually');
+            }
+          }}>
             <FolderOpen size={32} color="var(--accent-blue-light)" />
             <h3>本地文件夹</h3>
             <p>选择本地项目目录进行审查</p>
-            <input
-              placeholder="项目路径..."
-              value={projectPath}
-              onChange={e => setProjectPath(e.target.value)}
-              onClick={e => e.stopPropagation()}
-            />
+            <div style={{ display: 'flex', gap: 8 }} onClick={e => e.stopPropagation()}>
+              <input
+                placeholder="项目路径..."
+                value={projectPath}
+                onChange={e => setProjectPath(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button 
+                className="btn btn-primary" 
+                onClick={() => { if (projectPath) setPhase('configure'); }}
+                disabled={!projectPath}
+              >
+                下一步
+              </button>
+            </div>
           </div>
-          <div className="card review-option" onClick={() => { setGitUrl('https://github.com/example/repo'); setPhase('configure'); }}>
+          <div className="card review-option">
             <GitBranch size={32} color="var(--accent-purple-light)" />
             <h3>Git 仓库</h3>
             <p>Agent 自主克隆仓库到沙箱审查</p>
-            <input
-              placeholder="https://github.com/user/repo"
-              value={gitUrl}
-              onChange={e => setGitUrl(e.target.value)}
-              onClick={e => e.stopPropagation()}
-            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                placeholder="https://github.com/user/repo"
+                value={gitUrl}
+                onChange={e => setGitUrl(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button 
+                className="btn btn-primary" 
+                onClick={() => { if (gitUrl) setPhase('configure'); }}
+                disabled={!gitUrl}
+              >
+                下一步
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -171,6 +199,11 @@ export default function Review() {
                 <div className="sandbox-progress-fill" style={{ width: `${(runningLog.length / sandboxLogs.length) * 100}%` }} />
               </div>
               <span>{Math.round((runningLog.length / sandboxLogs.length) * 100)}%</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: 16 }}>
+              <button className="btn btn-secondary" onClick={() => setPhase('configure')}>
+                 中断并返回
+              </button>
             </div>
           </div>
         </div>

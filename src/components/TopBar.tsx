@@ -26,7 +26,11 @@ export default function TopBar() {
   const [isBellOpen, setIsBellOpen] = useState(false);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+    const el = document.documentElement;
+    el.classList.add('theme-transitioning');
+    el.setAttribute('data-theme', isDark ? 'dark' : 'light');
+    const timer = setTimeout(() => el.classList.remove('theme-transitioning'), 500);
+    return () => clearTimeout(timer);
   }, [isDark]);
 
   const popoverRef = useRef<HTMLDivElement>(null);

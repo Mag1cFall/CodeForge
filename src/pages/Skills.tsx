@@ -1,4 +1,4 @@
-import { Zap, Download, Star, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Zap, ToggleLeft, ToggleRight, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import './PageCommon.css';
 
@@ -12,26 +12,66 @@ const skills = [
 ];
 
 export default function Skills() {
-  const [skillState, setSkillState] = useState(skills.map(s => s.enabled));
+  const [skillList, setSkillList] = useState(skills);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', path: '' });
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   const toggle = (i: number) => {
-    setSkillState(prev => prev.map((v, idx) => idx === i ? !v : v));
+    setSkillList(prev => prev.map((s, idx) => idx === i ? { ...s, enabled: !s.enabled } : s));
+  };
+
+  const handleInstall = () => {
+    if (form.name && form.path) {
+      setSkillList([...skillList, { name: form.name.toLowerCase().replace(/\s+/g, '-'), title: form.name, desc: `引用于 ${form.path}`, enabled: true, builtin: false }]);
+      setShowForm(false);
+      setForm({ name: '', path: '' });
+    }
   };
 
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1>⚡ 技能市场</h1>
+        <h1><Zap size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 技能市场</h1>
         <p>Skill = Prompt + Tools + MCP — 赋予 Agent 专业领域能力</p>
       </div>
 
+      <div className="page-toolbar">
+        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
+          <Plus size={16} /> {showForm ? '取消' : '安装技能'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <div style={{ flex: 1 }}>
+                <label>名称</label>
+                <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} style={{ width: '100%' }} />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label>SKILL.md 路径或 URL</label>
+                <input value={form.path} onChange={e => setForm({...form, path: e.target.value})} placeholder="例如: https://github... 或 C:\path\to\SKILL.md" style={{ width: '100%' }} />
+              </div>
+            </div>
+            <div>
+              <button className="btn btn-primary" onClick={handleInstall}>安装</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card-grid">
-        {skills.map((skill, i) => (
-          <div key={skill.name} className="card card-glow skill-card">
+        {skillList.map((skill, i) => (
+          <div key={skill.name} className="card card-glow skill-card" onClick={() => setExpanded(expanded === i ? null : i)} style={{ cursor: 'pointer' }}>
             <div className="skill-card-header">
-              <h4>{skill.title}</h4>
-              <button className="btn btn-ghost btn-icon" onClick={() => toggle(i)}>
-                {skillState[i] 
+              <h4 style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {expanded === i ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                {skill.title}
+              </h4>
+              <button className="btn btn-ghost btn-icon" onClick={(e) => { e.stopPropagation(); toggle(i); }}>
+                {skill.enabled 
                   ? <ToggleRight size={24} color="var(--accent-green)" />
                   : <ToggleLeft size={24} color="var(--text-tertiary)" />
                 }
@@ -43,8 +83,14 @@ export default function Skills() {
                 ? <span className="badge badge-blue">内置</span>
                 : <span className="badge badge-purple">社区</span>
               }
-              <span className="badge badge-green">{skillState[i] ? '已启用' : '未启用'}</span>
+              <span className={`badge badge-${skill.enabled ? 'green' : 'secondary'}`}>{skill.enabled ? '已启用' : '未启用'}</span>
             </div>
+            {expanded === i && (
+              <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-main)', borderRadius: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
+                <strong>Instructions 预览：</strong><br />
+                {`# ${skill.title}\n${skill.desc}\n\n## 规则\n1. 遵守最佳实践\n2. 优化性能\n3. 编写注释`}
+              </div>
+            )}
           </div>
         ))}
       </div>
