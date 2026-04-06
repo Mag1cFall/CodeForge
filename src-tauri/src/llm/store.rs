@@ -4,7 +4,10 @@ use uuid::Uuid;
 use crate::db::sqlite::Database;
 use crate::error::{AppError, AppResult};
 
-use super::model::{ProviderConfigInput, ProviderExtra, ProviderRecord, ProviderSummary};
+use super::model::{
+    model_context_window, ProviderConfigInput, ProviderExtra, ProviderRecord, ProviderSummary,
+    ProviderType,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProviderStore {
@@ -110,6 +113,47 @@ impl ProviderStore {
         Ok(record)
     }
 
+    pub fn resolve_context_window_for_default(&self, model: &str) -> AppResult<usize> {
+        let provider = self.get_default()?;
+        self.resolve_context_window(provider.as_ref(), model)
+    }
+
+    pub fn resolve_context_window(
+        &self,
+        provider: Option<&ProviderRecord>,
+        model: &str,
+    ) -> AppResult<usize> {
+        let normalized = normalize_model_key(model);
+        if let Some(provider) = provider {
+            if let Some(value) = provider.extra.context_windows.get(&normalized).copied() {
+                return Ok(value);
+            }
+        }
+
+        Ok(model_context_window(model))
+    }
+
+    pub async fn resolve_context_window_with_refresh(
+        &self,
+        provider: Option<&ProviderRecord>,
+        model: &str,
+    ) -> AppResult<usize> {
+        let normalized = normalize_model_key(model);
+        if let Some(provider) = provider {
+            if let Some(value) = provider.extra.context_windows.get(&normalized).copied() {
+                return Ok(value);
+            }
+
+            if let Some(discovered) = fetch_context_window_from_provider_async(provider, model).await?
+            {
+                self.store_context_window(provider, &normalized, discovered)?;
+                return Ok(discovered);
+            }
+        }
+
+        Ok(model_context_window(model))
+    }
+
     pub fn create(&self, input: ProviderConfigInput) -> AppResult<ProviderSummary> {
         let name = input.name.trim();
         let endpoint = input.endpoint.trim();
@@ -128,6 +172,7 @@ impl ProviderStore {
                 .filter(|item| !item.is_empty())
                 .collect(),
             headers: input.headers,
+            context_windows: Default::default(),
         };
 
         let mut connection = self.db.connection()?;
@@ -170,6 +215,47 @@ impl ProviderStore {
             .get_by_id(&id)?
             .ok_or_else(|| AppError::new("新建 Provider 后未能读取记录"))?;
         Ok(ProviderSummary::from(&record))
+    }
+
+    pub fn ensure_default_from_env(&self) -> AppResult<Option<ProviderSummary>> {
+        if !self.list()?.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(endpoint) = std::env::var("OPENAI_API_BASE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(api_key) = std::env::var("OPENAI_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let model = std::env::var("OPENAI_API_MODEL")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_MODEL").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "gpt-5.4-mini".to_string());
+
+        let created = self.create(ProviderConfigInput {
+            name: "OpenAI Default".into(),
+            provider_type: ProviderType::OpenAiCompatible,
+            endpoint,
+            api_key: Some(api_key),
+            model: model.clone(),
+            models: vec![model],
+            enabled: true,
+            is_default: true,
+            headers: Default::default(),
+        })?;
+
+        Ok(Some(created))
     }
 
     pub fn delete(&self, id: &str) -> AppResult<()> {
@@ -241,6 +327,142 @@ impl ProviderStore {
 
         Ok(record)
     }
+
+    fn store_context_window(
+        &self,
+        provider: &ProviderRecord,
+        model: &str,
+        context_window: usize,
+    ) -> AppResult<()> {
+        let mut next_extra = provider.extra.clone();
+        next_extra
+            .context_windows
+            .insert(model.to_string(), context_window);
+
+        let connection = self.db.connection()?;
+        connection.execute(
+            "UPDATE providers SET extra_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![
+                provider.id,
+                serde_json::to_string(&next_extra)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+fn normalize_model_key(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
+}
+
+async fn fetch_context_window_from_provider_async(
+    provider: &ProviderRecord,
+    model: &str,
+) -> AppResult<Option<usize>> {
+    if provider.provider_type != ProviderType::OpenAiCompatible {
+        return Ok(None);
+    }
+
+    let endpoint = normalize_models_endpoint(&provider.endpoint);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|error| AppError::new(error.to_string()))?;
+
+    let mut request = client.get(endpoint);
+    if let Some(api_key) = provider
+        .api_key
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        request = request.bearer_auth(api_key.trim());
+    }
+    for (key, value) in &provider.extra.headers {
+        request = request.header(key, value);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(_) => return Ok(None),
+    };
+    let payload: serde_json::Value = match response.error_for_status() {
+        Ok(response) => match response.json().await {
+            Ok(json) => json,
+            Err(_) => return Ok(None),
+        },
+        Err(_) => return Ok(None),
+    };
+
+    Ok(extract_context_window_from_models_payload(&payload, model))
+}
+
+fn normalize_models_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        return format!("{}/models", trimmed.trim_end_matches("/chat/completions"));
+    }
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/models");
+    }
+    if trimmed.ends_with("/models") {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}/models")
+}
+
+fn extract_context_window_from_models_payload(
+    payload: &serde_json::Value,
+    model: &str,
+) -> Option<usize> {
+    let target = normalize_model_key(model);
+    let candidates = payload
+        .get("data")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .or_else(|| payload.as_array().cloned())
+        .unwrap_or_default();
+
+    for item in candidates {
+        let item_id = item
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(normalize_model_key)
+            .or_else(|| {
+                item.get("name")
+                    .and_then(|value| value.as_str())
+                    .map(normalize_model_key)
+            });
+        if item_id.as_deref() != Some(target.as_str()) {
+            continue;
+        }
+
+        if let Some(tokens) = read_context_window_value(&item) {
+            return Some(tokens);
+        }
+    }
+
+    None
+}
+
+fn read_context_window_value(item: &serde_json::Value) -> Option<usize> {
+    [
+        item.get("context_window"),
+        item.get("contextWindow"),
+        item.get("max_input_tokens"),
+        item.get("maxInputTokens"),
+        item.get("input_token_limit"),
+        item.get("inputTokenLimit"),
+        item.get("context_length"),
+        item.get("contextLength"),
+        item.get("limits")
+            .and_then(|value| value.get("context_window")),
+        item.get("limits")
+            .and_then(|value| value.get("contextWindow")),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|value| value.as_u64().map(|tokens| tokens as usize))
 }
 
 fn bool_to_int(value: bool) -> i64 {
@@ -259,6 +481,23 @@ mod tests {
 
     use super::*;
     use crate::llm::model::{ProviderConfigInput, ProviderType};
+
+    #[test]
+    fn extracts_context_window_from_models_payload() {
+        let payload = serde_json::json!({
+            "data": [
+                {
+                    "id": "gpt-5.4-mini",
+                    "context_window": 400000
+                }
+            ]
+        });
+
+        assert_eq!(
+            extract_context_window_from_models_payload(&payload, "gpt-5.4-mini"),
+            Some(400_000)
+        );
+    }
 
     fn temp_db_path() -> PathBuf {
         std::env::temp_dir().join(format!("codeforge-provider-{}.db", Uuid::new_v4()))

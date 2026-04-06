@@ -1,10 +1,26 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  Send, Bot, User, Loader2, Paperclip, Sparkles, RotateCcw, Copy, Wrench,
+  Send, Bot, User, Loader2, Paperclip, Sparkles, RotateCcw, Copy, Wrench, Pencil,
   PanelRightOpen, PanelRightClose, Plus, MessageSquare, Gauge, Layers,
   Settings2, Thermometer
 } from 'lucide-react';
 import PermissionDialog, { PermissionRequest } from '../components/PermissionDialog';
+import {
+  agentList,
+  embeddingConfigGet,
+  chatSend,
+  chatRetry,
+  listenChatChunk,
+  listenPermissionRequest,
+  permissionRespond,
+  providerList,
+  ProviderSummary,
+  sessionRewriteMessage,
+  sessionCreate,
+  sessionList,
+  sessionMessages,
+  SessionMessage,
+} from '../lib/backend';
 import './Chat.css';
 
 interface ChatMessage {
@@ -20,91 +36,509 @@ interface Session {
   title: string;
   messageCount: number;
   tokenUsed: number;
+  tokenMax: number;
   createdAt: Date;
 }
 
-const mockSessions: Session[] = [
-  { id: '1', title: '审查 main.rs', messageCount: 8, tokenUsed: 4200, createdAt: new Date() },
-  { id: '2', title: '重构 handler 模块', messageCount: 12, tokenUsed: 8900, createdAt: new Date(Date.now() - 3600000) },
-  { id: '3', title: '最佳实践咨询', messageCount: 3, tokenUsed: 1200, createdAt: new Date(Date.now() - 7200000) },
-];
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
 
-const initialMessages: ChatMessage[] = [
-  {
-    id: '1',
-    role: 'assistant',
-    content: '你好！我是 **CodeForge Agent**，你的 AI 代码助手。\n\n我可以帮你：\n- 🔍 **审查代码** — 发现潜在问题和改进空间\n- 🛠️ **重构建议** — 提供最佳实践推荐\n- 📚 **知识检索** — 基于 RAG 语义搜索代码库\n- ⚡ **执行任务** — 通过工具调用完成复杂操作\n\n请输入你的需求，或者直接粘贴代码片段让我审查。',
-    timestamp: new Date(),
+const readString = (value: Record<string, unknown>, key: string): string => {
+  const target = value[key];
+  return typeof target === 'string' ? target : '';
+};
+
+const toToolCalls = (items: Array<Record<string, unknown>>): NonNullable<ChatMessage['toolCalls']> => {
+  return items.map((item) => {
+    const result = item.result;
+    return {
+      name: readString(item, 'name') || 'tool',
+      args: JSON.stringify(item, null, 2),
+      result: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+    };
+  });
+};
+
+const parseTimestamp = (value: string): Date => {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
+const toProviderModels = (provider?: ProviderSummary): string[] => {
+  if (!provider) {
+    return [];
   }
-];
+  const models = provider.models.length > 0 ? provider.models : [provider.model];
+  return models.filter((model) => model.length > 0);
+};
+
+const getDefaultProviderId = (providers: ProviderSummary[]): string => {
+  return providers.find((item) => item.isDefault)?.id || providers[0]?.id || '';
+};
+
+const EMBEDDING_ENV_PROVIDER_ID = '__embedding_env__';
+
+const toChatMessage = (message: SessionMessage): ChatMessage => {
+  const role: ChatMessage['role'] = message.role === 'user' ? 'user' : 'assistant';
+  const toolCalls = toToolCalls(message.toolCalls.filter(isRecord));
+
+  return {
+    id: message.id,
+    role,
+    content: message.content,
+    timestamp: parseTimestamp(message.createdAt),
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+};
 
 export default function Chat() {
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [providerOptions, setProviderOptions] = useState<ProviderSummary[]>([]);
   const [input, setInput] = useState('');
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showPanel, setShowPanel] = useState(true);
-  const [activeSession, setActiveSession] = useState('1');
+  const [activeSession, setActiveSession] = useState('');
   const [permRequest, setPermRequest] = useState<PermissionRequest | null>(null);
-  const [provider, setProvider] = useState('anthropic');
-  const [model, setModel] = useState('claude-sonnet-4-6');
+  const [provider, setProvider] = useState('');
+  const [model, setModel] = useState('');
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [maxTokens, setMaxTokens] = useState(64000);
   const [streaming, setStreaming] = useState(true);
+  const [embeddingProvider, setEmbeddingProvider] = useState('');
+  const [embeddingEndpoint, setEmbeddingEndpoint] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeSessionRef = useRef('');
+  const pendingAssistantIdRef = useRef<string | null>(null);
 
-  const contextUsed = 4200;
-  const contextMax = 1000000;
-  const contextPercent = Math.round((contextUsed / contextMax) * 100);
+  const selectedProvider = providerOptions.find((item) => item.id === provider);
+  const modelOptions = toProviderModels(selectedProvider);
+  const selectedEmbeddingProvider = providerOptions.find((item) => item.id === embeddingProvider);
+  const embeddingModelOptions = Array.from(new Set([
+    ...toProviderModels(selectedEmbeddingProvider),
+    ...(embeddingModel ? [embeddingModel] : []),
+  ])).filter((item) => item.length > 0);
+
+  const activeSessionData = sessions.find((item) => item.id === activeSession);
+  const contextUsed = activeSessionData?.tokenUsed ?? 0;
+  const contextMax = activeSessionData?.tokenMax ?? 1_000_000;
+  const contextPercent = contextMax > 0 ? Math.round((contextUsed / contextMax) * 100) : 0;
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+    setEditingMessageId(null);
+  }, [activeSession]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-    const userMsg: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: input,
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, userMsg]);
-    setInput('');
-    setIsLoading(true);
+  const applyEmbeddingProvider = useCallback((providerId: string, providers: ProviderSummary[]) => {
+    if (providerId === EMBEDDING_ENV_PROVIDER_ID) {
+      setEmbeddingProvider(providerId);
+      return;
+    }
+    const selected = providers.find((item) => item.id === providerId);
+    setEmbeddingProvider(providerId);
+    if (!selected) {
+      return;
+    }
 
-    setTimeout(() => {
-      if (input.toLowerCase().includes('rm') || input.toLowerCase().includes('delete')) {
-        setPermRequest({
-          id: 'perm-1',
-          toolName: 'run_shell',
-          args: { command: input },
-          riskLevel: 'high',
-          description: `Agent 请求执行可能具有破坏性的 Shell 命令`,
+    const models = toProviderModels(selected);
+    setEmbeddingEndpoint(selected.endpoint);
+    setEmbeddingApiKey(selected.apiKey ?? '');
+    setEmbeddingModel(selected.model || models[0] || '');
+  }, []);
+
+  const loadEmbeddingConfig = useCallback(async (providers: ProviderSummary[]) => {
+    try {
+      const config = await embeddingConfigGet();
+      const matchedProvider = providers.find((item) => {
+        const models = toProviderModels(item);
+        return item.endpoint === config.endpoint && (models.includes(config.model) || item.model === config.model);
+      });
+
+      setEmbeddingProvider(matchedProvider?.id || EMBEDDING_ENV_PROVIDER_ID);
+      setEmbeddingEndpoint(config.endpoint || matchedProvider?.endpoint || '');
+      setEmbeddingModel(config.model || matchedProvider?.model || '');
+      setEmbeddingApiKey(config.apiKey || matchedProvider?.apiKey || '');
+    } catch {
+      const defaultProviderId = getDefaultProviderId(providers);
+      if (!defaultProviderId) {
+        setEmbeddingProvider('');
+        setEmbeddingEndpoint('');
+        setEmbeddingModel('');
+        setEmbeddingApiKey('');
+        return;
+      }
+      applyEmbeddingProvider(defaultProviderId, providers);
+    }
+  }, [applyEmbeddingProvider]);
+
+  const loadSessionMessages = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setMessages([]);
+      return;
+    }
+
+    try {
+      const data = await sessionMessages(sessionId);
+      setMessages((data ?? []).map(toChatMessage));
+    } catch {
+      setMessages([]);
+    }
+  }, []);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const records = await sessionList();
+      const next = await Promise.all(
+        (records ?? []).map(async (record) => {
+          let messageCount = 0;
+          try {
+            messageCount = (await sessionMessages(record.id)).length;
+          } catch {
+            messageCount = 0;
+          }
+
+          return {
+            id: record.id,
+            title: record.title,
+            messageCount,
+            tokenUsed: record.contextTokensUsed,
+            tokenMax: record.contextTokensMax,
+            createdAt: parseTimestamp(record.createdAt),
+          };
+        })
+      );
+
+      setSessions(next);
+      if (next.length === 0) {
+        setActiveSession('');
+        return;
+      }
+      setActiveSession((prev) => (next.some((item) => item.id === prev) ? prev : next[0].id));
+    } catch {
+      setSessions([]);
+      setActiveSession('');
+    }
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = await providerList();
+        const list = (data ?? []).filter((item) => item.enabled);
+        const next = list.length > 0 ? list : (data ?? []);
+        const defaultProviderId = getDefaultProviderId(next);
+
+        setProviderOptions(next);
+        setProvider((prev) => (next.some((item) => item.id === prev) ? prev : defaultProviderId));
+
+        if (next.length === 0) {
+          setEmbeddingProvider('');
+          setEmbeddingEndpoint('');
+          setEmbeddingModel('');
+          setEmbeddingApiKey('');
+        } else {
+          await loadEmbeddingConfig(next);
+        }
+      } catch {
+        setProviderOptions([]);
+        setProvider('');
+        setEmbeddingProvider('');
+        setEmbeddingEndpoint('');
+        setEmbeddingModel('');
+        setEmbeddingApiKey('');
+      }
+    })();
+    void loadSessions();
+  }, [loadEmbeddingConfig, loadSessions]);
+
+  useEffect(() => {
+    if (!selectedProvider) {
+      setModel('');
+      return;
+    }
+
+    const models = toProviderModels(selectedProvider);
+    if (models.length === 0) {
+      setModel('');
+      return;
+    }
+
+    if (!models.includes(model)) {
+      setModel(selectedProvider.model || models[0]);
+    }
+  }, [selectedProvider, model]);
+
+  useEffect(() => {
+    if (!activeSession) {
+      setMessages([]);
+      return;
+    }
+    void loadSessionMessages(activeSession);
+  }, [activeSession, loadSessionMessages]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const subscribe = async () => {
+      try {
+        unlisten = await listenChatChunk((payload) => {
+          if (payload.sessionId !== activeSessionRef.current) {
+            return;
+          }
+
+          const pendingId = pendingAssistantIdRef.current;
+          if (pendingId) {
+            setMessages((prev) => prev.map((item) => {
+              if (item.id !== pendingId) {
+                return item;
+              }
+
+              return {
+                ...item,
+                content: `${item.content}${payload.delta}`,
+                toolCalls: payload.done && payload.toolResults.length > 0
+                  ? toToolCalls(payload.toolResults.filter(isRecord))
+                  : item.toolCalls,
+              };
+            }));
+          } else if (payload.delta || payload.toolResults.length > 0) {
+            setMessages((prev) => {
+              const lastMessage = prev[prev.length - 1];
+              const nextMessage: ChatMessage = {
+                id: `${Date.now()}-assistant-resume`,
+                role: 'assistant',
+                content: payload.delta,
+                timestamp: new Date(),
+                toolCalls: payload.toolResults.length > 0
+                  ? toToolCalls(payload.toolResults.filter(isRecord))
+                  : undefined,
+              };
+
+              if (lastMessage?.role === 'assistant' && lastMessage.content === '等待权限确认后继续执行。') {
+                return [
+                  ...prev.slice(0, -1),
+                  {
+                    ...lastMessage,
+                    content: payload.delta,
+                    timestamp: new Date(),
+                    toolCalls: nextMessage.toolCalls,
+                  },
+                ];
+              }
+
+              return [...prev, nextMessage];
+            });
+          }
+
+          if (payload.done) {
+            setIsLoading(false);
+            pendingAssistantIdRef.current = null;
+            void loadSessionMessages(payload.sessionId);
+            void loadSessions();
+          }
         });
-        setIsLoading(false);
+      } catch {
+        unlisten = null;
+      }
+    };
+
+    void subscribe();
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [loadSessionMessages, loadSessions]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const subscribe = async () => {
+      try {
+        unlisten = await listenPermissionRequest((payload) => {
+          setPermRequest({
+            id: payload.id,
+            toolName: payload.toolName,
+            args: isRecord(payload.args) ? payload.args : {},
+            riskLevel: payload.riskLevel,
+            description: payload.description,
+          });
+        });
+      } catch {
+        unlisten = null;
+      }
+    };
+
+    void subscribe();
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  const handleCreateSession = useCallback(async () => {
+    try {
+      const agents = await agentList();
+      const defaultAgent = (agents ?? [])[0];
+      if (!defaultAgent) {
         return;
       }
 
-      const reply: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+      const created = await sessionCreate(defaultAgent.id);
+      activeSessionRef.current = created.id;
+      setActiveSession(created.id);
+      await loadSessions();
+      await loadSessionMessages(created.id);
+    } catch {
+      setSessions([]);
+      setActiveSession('');
+      setMessages([]);
+    }
+  }, [loadSessionMessages, loadSessions]);
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || isLoading) {
+      return;
+    }
+
+    let sessionId = activeSessionRef.current;
+    if (!sessionId) {
+      try {
+        const agents = await agentList();
+        const defaultAgent = (agents ?? [])[0];
+        if (!defaultAgent) {
+          return;
+        }
+
+        const created = await sessionCreate(defaultAgent.id);
+        sessionId = created.id;
+        activeSessionRef.current = created.id;
+        setActiveSession(created.id);
+        await loadSessions();
+      } catch {
+        setSessions([]);
+        return;
+      }
+    }
+
+    setIsLoading(true);
+
+    if (editingMessageId) {
+      try {
+        await sessionRewriteMessage(sessionId, editingMessageId, text);
+        setInput('');
+        await chatRetry(sessionId, editingMessageId);
+      } catch {
+        setIsLoading(false);
+      }
+      setEditingMessageId(null);
+      return;
+    }
+
+    const assistantId = `${Date.now()}-assistant`;
+    pendingAssistantIdRef.current = assistantId;
+
+    const userMsg: ChatMessage = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      {
+        id: assistantId,
         role: 'assistant',
-        content: '正在分析你的代码...\n\n```rust\n// 检测到以下问题:\n// 1. unwrap() 未处理错误 → 建议使用 ? 运算符\n// 2. 函数复杂度过高 (CC=12) → 建议拆分\n// 3. 变量命名不规范\n```\n\n**建议修改**:\n- 使用 `Result<T, E>` 替代 `unwrap()`\n- 将 `process_data()` 拆分为 `validate_input()` + `transform_data()`',
+        content: '',
         timestamp: new Date(),
-        toolCalls: [
-          { name: 'analyze_ast', args: '{"file": "src/main.rs"}', result: 'CC=12, lines=156' },
-          { name: 'find_code_smells', args: '{"pattern": "unwrap()"}', result: '3 occurrences' },
-        ],
-      };
-      setMessages(prev => [...prev, reply]);
+      },
+    ]);
+    setInput('');
+
+    try {
+      await chatSend(sessionId, text);
+    } catch {
       setIsLoading(false);
-    }, 1500);
+      pendingAssistantIdRef.current = null;
+      setMessages((prev) => prev.map((item) => {
+        if (item.id !== assistantId) {
+          return item;
+        }
+        return {
+          ...item,
+          content: '消息发送失败。',
+        };
+      }));
+    }
   };
+
+  const handleCopy = useCallback(async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+    }
+  }, []);
+
+  const handleRetry = useCallback(async (messageId: string) => {
+    if (!activeSessionRef.current || isLoading) {
+      return;
+    }
+    setIsLoading(true);
+    pendingAssistantIdRef.current = null;
+    try {
+      await chatRetry(activeSessionRef.current, messageId);
+    } catch {
+      setIsLoading(false);
+      void loadSessionMessages(activeSessionRef.current);
+    }
+  }, [isLoading, loadSessionMessages]);
+
+  const handleEdit = useCallback((messageId: string, content: string) => {
+    setEditingMessageId(messageId);
+    setInput(content);
+  }, []);
+
+  const handlePermissionApprove = useCallback((id: string) => {
+    void (async () => {
+      setIsLoading(true);
+      try {
+        await permissionRespond(id, true);
+      } catch {
+        setIsLoading(false);
+      }
+      setPermRequest(null);
+    })();
+  }, []);
+
+  const handlePermissionDeny = useCallback((id: string) => {
+    void (async () => {
+      setIsLoading(true);
+      try {
+        await permissionRespond(id, false);
+      } catch {
+        setIsLoading(false);
+      }
+      setPermRequest(null);
+    })();
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -155,8 +589,9 @@ export default function Chat() {
                   </div>
                 )}
                 <div className="chat-msg-actions">
-                  <button className="btn btn-ghost btn-sm"><Copy size={14} /></button>
-                  <button className="btn btn-ghost btn-sm"><RotateCcw size={14} /></button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleCopy(msg.content)}><Copy size={14} /></button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleRetry(msg.id)}><RotateCcw size={14} /></button>
+                  {msg.role === 'user' && <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleEdit(msg.id, msg.content)}><Pencil size={14} /></button>}
                 </div>
               </div>
             </div>
@@ -180,13 +615,13 @@ export default function Chat() {
             <button className="btn btn-ghost btn-icon"><Paperclip size={18} /></button>
             <textarea
               className="chat-input"
-              placeholder="输入消息，或粘贴代码进行审查..."
+              placeholder={editingMessageId ? '编辑消息后按发送重新生成回复...' : '输入消息，或粘贴代码进行审查...'}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               rows={1}
             />
-            <button className="chat-send-btn" onClick={handleSend} disabled={!input.trim() || isLoading}>
+            <button className="chat-send-btn" onClick={() => void handleSend()} disabled={!input.trim() || isLoading}>
               <Send size={18} />
             </button>
           </div>
@@ -209,7 +644,7 @@ export default function Chat() {
             </div>
             <div className="context-meter">
               <div className="context-meter-bar">
-                <div className="context-meter-fill" style={{ width: `${contextPercent}%` }} />
+                <div className="context-meter-fill" style={{ width: `${Math.max(0, Math.min(100, contextPercent))}%` }} />
               </div>
               <div className="context-meter-info">
                 <span>{(contextUsed / 1000).toFixed(1)}K / {(contextMax / 1000).toFixed(0)}K tokens</span>
@@ -218,7 +653,7 @@ export default function Chat() {
             </div>
             <div className="context-details">
               <div><Gauge size={12} /> 压缩: 自动</div>
-              <div><Bot size={12} /> Model: claude-sonnet-4-6 (1M ctx)</div>
+              <div><Bot size={12} /> Model: {model || '未设置'}</div>
             </div>
           </div>
 
@@ -229,21 +664,58 @@ export default function Chat() {
             </div>
             <div className="chat-config">
               <label>Provider</label>
-              <select value={provider} onChange={e => { setProvider(e.target.value); setModel(''); }}>
-                <option value="anthropic">Anthropic</option>
-                <option value="openai">OpenAI</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="ollama">Ollama</option>
+              <select value={provider} onChange={e => setProvider(e.target.value)}>
+                {providerOptions.length === 0 && <option value="">未配置 Provider</option>}
+                {providerOptions.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
               </select>
             </div>
             <div className="chat-config">
               <label>Model</label>
               <select value={model} onChange={e => setModel(e.target.value)}>
-                {provider === 'anthropic' && <><option value="claude-opus-4-6">claude-opus-4-6</option><option value="claude-sonnet-4-6">claude-sonnet-4-6</option></>}
-                {provider === 'openai' && <><option value="gpt-5.4">gpt-5.4</option><option value="gpt-5.4-mini">gpt-5.4-mini</option></>}
-                {provider === 'deepseek' && <><option value="deepseek-v3.2">deepseek-v3.2</option><option value="deepseek-coder-v3">deepseek-coder-v3</option></>}
-                {provider === 'ollama' && <><option value="qwen-3:72b">qwen-3:72b</option><option value="llama-4">llama-4</option></>}
+                {modelOptions.length === 0 && <option value="">未配置模型</option>}
+                {modelOptions.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
               </select>
+            </div>
+            <div className="chat-config">
+              <label>Embedding Provider</label>
+              <select value={embeddingProvider} onChange={e => applyEmbeddingProvider(e.target.value, providerOptions)}>
+                <option value={EMBEDDING_ENV_PROVIDER_ID}>环境配置</option>
+                <option value="">未绑定 Provider</option>
+                {providerOptions.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="chat-config">
+              <label>Embedding Endpoint</label>
+              <input
+                type="text"
+                value={embeddingEndpoint}
+                onChange={e => setEmbeddingEndpoint(e.target.value)}
+                style={{ width: '100%', padding: '0.4rem', background: 'var(--bg-input)', border: '1px solid var(--border-primary)', borderRadius: 4, color: 'var(--text-primary)' }}
+              />
+            </div>
+            <div className="chat-config">
+              <label>Embedding Model</label>
+              <select value={embeddingModel} onChange={e => setEmbeddingModel(e.target.value)}>
+                {embeddingModelOptions.length === 0 && <option value="">未配置模型</option>}
+                {embeddingModelOptions.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </div>
+            <div className="chat-config">
+              <label>Embedding Key</label>
+              <input
+                type="password"
+                value={embeddingApiKey}
+                onChange={e => setEmbeddingApiKey(e.target.value)}
+                style={{ width: '100%', padding: '0.4rem', background: 'var(--bg-input)', border: '1px solid var(--border-primary)', borderRadius: 4, color: 'var(--text-primary)' }}
+              />
             </div>
             <div className="chat-config">
               <div className="chat-config-row">
@@ -262,7 +734,7 @@ export default function Chat() {
             <div className="chat-config">
               <div className="chat-config-row">
                 <label>Max Tokens</label>
-                <input type="number" value={maxTokens} onChange={e => setMaxTokens(parseInt(e.target.value) || 0)} style={{ width: 80, textAlign: 'right', padding: '2px 6px', fontSize: 12, background: 'var(--bg-input)', border: '1px solid var(--border-primary)', borderRadius: 4, color: 'var(--text-primary)' }} />
+                <input type="number" value={maxTokens} onChange={e => setMaxTokens(parseInt(e.target.value, 10) || 0)} style={{ width: 80, textAlign: 'right', padding: '2px 6px', fontSize: 12, background: 'var(--bg-input)', border: '1px solid var(--border-primary)', borderRadius: 4, color: 'var(--text-primary)' }} />
               </div>
             </div>
             <div className="chat-config">
@@ -279,12 +751,12 @@ export default function Chat() {
             <div className="chat-sidebar-header">
               <MessageSquare size={16} />
               <span>会话历史</span>
-              <button className="btn btn-ghost btn-icon btn-sm" style={{ marginLeft: 'auto' }}>
+              <button className="btn btn-ghost btn-icon btn-sm" style={{ marginLeft: 'auto' }} onClick={() => void handleCreateSession()}>
                 <Plus size={14} />
               </button>
             </div>
             <div className="session-list">
-              {mockSessions.map(s => (
+              {sessions.map(s => (
                 <div key={s.id} className={`session-item ${activeSession === s.id ? 'active' : ''}`} onClick={() => setActiveSession(s.id)}>
                   <div className="session-title">{s.title}</div>
                   <div className="session-meta">{s.messageCount} 条消息 · {(s.tokenUsed / 1000).toFixed(1)}K tokens</div>
@@ -297,8 +769,8 @@ export default function Chat() {
 
       <PermissionDialog
         request={permRequest}
-        onApprove={() => { setPermRequest(null); }}
-        onDeny={() => { setPermRequest(null); }}
+        onApprove={handlePermissionApprove}
+        onDeny={handlePermissionDeny}
       />
     </div>
   );

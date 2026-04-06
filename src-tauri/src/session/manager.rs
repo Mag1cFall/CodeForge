@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::db::sqlite::Database;
 use crate::error::{AppError, AppResult};
+use crate::llm::model::model_context_window;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +68,15 @@ impl SessionManager {
     }
 
     pub fn create(&self, agent_id: String, title: Option<String>) -> AppResult<SessionRecord> {
+        self.create_with_context_max(agent_id, title, 128_000)
+    }
+
+    pub fn create_with_context_max(
+        &self,
+        agent_id: String,
+        title: Option<String>,
+        context_tokens_max: usize,
+    ) -> AppResult<SessionRecord> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let title = title.unwrap_or_else(|| "新会话".into());
@@ -75,9 +85,9 @@ impl SessionManager {
         connection.execute(
             r#"
             INSERT INTO sessions (id, title, agent_id, context_tokens_used, context_tokens_max, created_at, updated_at)
-            VALUES (?1, ?2, ?3, 0, 128000, ?4, ?5)
+            VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
             "#,
-            params![id, title, agent_id, now, now],
+            params![id, title, agent_id, context_tokens_max as i64, now, now],
         )?;
 
         self.get(&id)?
@@ -192,6 +202,23 @@ impl SessionManager {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn update_context_max(&self, session_id: &str, context_tokens_max: usize) -> AppResult<()> {
+        let connection = self.db.connection()?;
+        connection.execute(
+            "UPDATE sessions SET context_tokens_max = ?2, updated_at = ?3 WHERE id = ?1",
+            params![
+                session_id,
+                context_tokens_max as i64,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn normalize_model_context_max(&self, session_id: &str, model: &str) -> AppResult<()> {
+        self.update_context_max(session_id, model_context_window(model))
     }
 }
 

@@ -137,9 +137,58 @@
   transform: scale(1) rotate(0);
 }
 
+[data-tauri-drag-region] {
+  user-select: none;
+  cursor: grab;
+}
+
+[data-tauri-drag-region]:active {
+  cursor: grabbing;
+}
+
+.topbar-drag-area {
+  flex: 1;
+  height: 100%;
+  min-width: 20px;
+  -webkit-app-region: drag;
+}
+
+/* Custom Window Controls */
+.window-controls {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.window-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  transition: all 0.2s;
+}
+
+.window-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.window-btn-close:hover {
+  background: var(--accent-red);
+  color: #fff;
+}
+
 /* Elegant Popovers */
 .popover-container {
   position: relative;
+  -webkit-app-region: no-drag;
 }
 
 .topbar-popover {

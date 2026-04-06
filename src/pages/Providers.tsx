@@ -1,19 +1,31 @@
+import { useEffect, useState } from 'react';
 import { Plus, CheckCircle2, Key, Globe, Server } from 'lucide-react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { providerList, ProviderSummary } from '../lib/backend';
 import './PageCommon.css';
 
-const providers = [
-  { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', models: ['gpt-5.4', 'gpt-5.4-mini'], status: 'active', keySet: true },
-  { name: 'Anthropic', endpoint: 'https://api.anthropic.com/v1', models: ['claude-opus-4-6', 'claude-sonnet-4-6'], status: 'active', keySet: true },
-  { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1', models: ['deepseek-v3.2', 'deepseek-coder-v3'], status: 'active', keySet: true },
-  { name: 'Ollama', endpoint: 'http://localhost:11434', models: ['qwen-3:72b', 'llama-4'], status: 'inactive', keySet: false },
-];
-
 export default function Providers() {
+  const { t } = useAppPreferences();
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
+
+  useEffect(() => {
+    const loadProviders = async () => {
+      try {
+        const data = await providerList();
+        setProviders(data ?? []);
+      } catch {
+        setProviders([]);
+      }
+    };
+
+    void loadProviders();
+  }, []);
+
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><Server size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 模型配置</h1>
-        <p>配置 LLM Provider 连接，支持 OpenAI / Anthropic / DeepSeek / Ollama 等</p>
+        <h1><Server size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.providers')}</h1>
+        <p>{t('page.providers.desc')}</p>
       </div>
 
       <div className="page-toolbar">
@@ -22,10 +34,10 @@ export default function Providers() {
 
       <div className="card-grid">
         {providers.map((p) => (
-          <div key={p.name} className="card card-glow">
+          <div key={p.id} className="card card-glow">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h4 style={{ fontSize: 16, fontWeight: 700 }}>{p.name}</h4>
-              {p.status === 'active'
+              {p.enabled
                 ? <span className="badge badge-green"><CheckCircle2 size={12} /> 可用</span>
                 : <span className="badge badge-red">未激活</span>
               }
@@ -35,7 +47,7 @@ export default function Providers() {
               {p.endpoint}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-              {p.models.map((m) => (
+              {(p.models.length > 0 ? p.models : [p.model]).map((m) => (
                 <span key={m} className="badge badge-purple">{m}</span>
               ))}
             </div>

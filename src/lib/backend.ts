@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export interface AgentRecord {
   id: string;
@@ -25,6 +26,7 @@ export interface ProviderSummary {
   name: string;
   providerType: ProviderType;
   endpoint: string;
+  apiKey?: string | null;
   model: string;
   models: string[];
   enabled: boolean;
@@ -138,12 +140,49 @@ export interface AppSettings {
   theme: string;
   language: string;
   projectPath?: string | null;
+  skillsPath?: string | null;
+  contextWindowOverrides?: Record<string, number>;
+}
+
+export interface EmbeddingConfig {
+  endpoint: string;
+  model: string;
+  apiKey?: string | null;
 }
 
 export interface ProjectInfo {
   path: string;
   fileCount: number;
   name: string;
+}
+
+export interface ChatChunkEvent {
+  sessionId: string;
+  delta: string;
+  done: boolean;
+  toolResults: Array<Record<string, unknown>>;
+}
+
+export interface PermissionRequestPayload {
+  id: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  riskLevel: 'low' | 'medium' | 'high';
+  description: string;
+}
+
+export interface ReviewProgressEvent {
+  step: string;
+  log: string;
+}
+
+export interface ReviewIssue {
+  file: string;
+  line: number;
+  rule: string;
+  severity: string;
+  message: string;
+  suggestion: string;
 }
 
 export const agentList = () => invoke<AgentRecord[]>('agent_list');
@@ -159,8 +198,10 @@ export const sessionList = () => invoke<SessionRecord[]>('session_list');
 export const sessionCreate = (agentId: string) => invoke<SessionRecord>('session_create', { agentId });
 export const sessionDelete = (id: string) => invoke<void>('session_delete', { id });
 export const sessionMessages = (id: string) => invoke<SessionMessage[]>('session_messages', { id });
+export const sessionRewriteMessage = (sessionId: string, messageId: string, content: string) => invoke<void>('session_rewrite_message', { sessionId, messageId, content });
 
 export const chatSend = (sessionId: string, message: string) => invoke<void>('chat_send', { sessionId, message });
+export const chatRetry = (sessionId: string, messageId?: string | null) => invoke<void>('chat_retry', { sessionId, messageId });
 export const permissionRespond = (requestId: string, approved: boolean) => invoke<void>('permission_respond', { requestId, approved });
 
 export const toolList = () => invoke<ToolSchema[]>('tool_list');
@@ -182,7 +223,28 @@ export const logList = (limit: number) => invoke<TraceLog[]>('log_list', { limit
 
 export const settingsGet = () => invoke<AppSettings>('settings_get');
 export const settingsUpdate = (settings: AppSettings) => invoke<void>('settings_update', { settings });
+export const embeddingConfigGet = () => invoke<EmbeddingConfig>('embedding_config_get');
 
 export const projectOpen = (path: string) => invoke<ProjectInfo>('project_open', { path });
 export const projectClone = (gitUrl: string) => invoke<ProjectInfo>('project_clone', { gitUrl });
 export const projectReview = (path: string, sandbox: boolean) => invoke<void>('project_review', { path, sandbox });
+
+export const listenChatChunk = (handler: (payload: ChatChunkEvent) => void): Promise<UnlistenFn> =>
+  listen<ChatChunkEvent>('chat_chunk', (event) => {
+    handler(event.payload);
+  });
+
+export const listenPermissionRequest = (handler: (payload: PermissionRequestPayload) => void): Promise<UnlistenFn> =>
+  listen<PermissionRequestPayload>('permission_request', (event) => {
+    handler(event.payload);
+  });
+
+export const listenReviewProgress = (handler: (payload: ReviewProgressEvent) => void): Promise<UnlistenFn> =>
+  listen<ReviewProgressEvent>('review_progress', (event) => {
+    handler(event.payload);
+  });
+
+export const listenReviewResult = (handler: (payload: ReviewIssue[]) => void): Promise<UnlistenFn> =>
+  listen<ReviewIssue[]>('review_result', (event) => {
+    handler(event.payload);
+  });

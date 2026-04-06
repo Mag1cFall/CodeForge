@@ -1,4 +1,4 @@
-use crate::harness::compression::{compress_messages, CompressionResult};
+use crate::harness::compression::{compress_messages, estimate_messages_tokens, CompressionResult};
 use crate::llm::model::ChatMessage;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -37,10 +37,7 @@ impl AgentContextManager {
     }
 
     pub fn estimate_tokens(&self, messages: &[ChatMessage]) -> usize {
-        messages
-            .iter()
-            .map(|message| message.content.chars().count() / 4 + 1)
-            .sum()
+        estimate_messages_tokens(messages)
     }
 
     pub fn snapshot(&self, messages: &[ChatMessage]) -> ContextSnapshot {
@@ -64,7 +61,7 @@ impl AgentContextManager {
     ) {
         messages.push(ChatMessage {
             role: "assistant".into(),
-            content: format!("Tool {tool_name} returned:\n{output}"),
+            content: format!("Tool result:\n[{tool_name}] {output}"),
         });
     }
 }

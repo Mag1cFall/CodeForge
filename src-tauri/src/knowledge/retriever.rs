@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::error::AppResult;
 
-use super::embedder::{Embedder, LocalHashEmbedder};
+use super::embedder::{Embedder, create_embedder};
 use super::indexer::CodeIndexer;
 use super::store::{KnowledgeRepo, KnowledgeStore};
 
@@ -15,11 +16,17 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KnowledgeService {
     store: KnowledgeStore,
     indexer: CodeIndexer,
-    embedder: LocalHashEmbedder,
+    embedder: Arc<Box<dyn Embedder>>,
+}
+
+impl std::fmt::Debug for KnowledgeService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KnowledgeService").finish()
+    }
 }
 
 impl KnowledgeService {
@@ -27,7 +34,7 @@ impl KnowledgeService {
         Self {
             store,
             indexer: CodeIndexer::default(),
-            embedder: LocalHashEmbedder::new(128),
+            embedder: Arc::new(create_embedder()),
         }
     }
 

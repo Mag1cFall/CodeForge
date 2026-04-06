@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Emitter, Runtime};
@@ -5,15 +6,16 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::error::AppResult;
 use crate::harness::budget::TokenBudget;
 use crate::harness::permission::{PermissionManager, PermissionPolicy, PermissionRequest};
-use crate::llm::model::{ChatMessage, ChatRequest, ToolDefinition};
+use crate::llm::model::{configured_context_window, ChatMessage, ChatRequest, ToolDefinition};
 use crate::llm::provider::build_provider;
 use crate::llm::store::ProviderStore;
+use crate::logging::service::TraceLogService;
 use crate::session::manager::{SessionManager, SessionRecord};
 use crate::tools::registry::{ToolExecutionContext, ToolRegistry};
 use crate::tools::schema::ToolSet;
 
 use super::definition::{AgentRecord, AgentStore, AgentStatus};
-use super::hooks::{AgentHooks, NoopHooks};
+use super::hooks::{AgentHooks, TraceHooks};
 use super::prompt::build_system_prompt;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,6 +34,8 @@ pub struct AgentRuntime {
     pub session_manager: SessionManager,
     pub permission_manager: PermissionManager,
     pub budget: TokenBudget,
+    pub logs: TraceLogService,
+    pub context_window_overrides: BTreeMap<String, usize>,
 }
 
 impl AgentRuntime {
@@ -47,9 +51,10 @@ impl AgentRuntime {
         self.run_internal(
             agent,
             session,
-            user_message,
+            Some(user_message),
             skill_instructions,
             workspace_root,
+            true,
             |request| {
                 app.emit("permission_request", &request).ok();
             },
@@ -68,9 +73,51 @@ impl AgentRuntime {
         self.run_internal(
             agent,
             session,
-            user_message,
+            Some(user_message),
             skill_instructions,
             workspace_root,
+            true,
+            |_| {},
+        )
+        .await
+    }
+
+    pub async fn run_from_session<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        agent: &AgentRecord,
+        session: &SessionRecord,
+        skill_instructions: String,
+        workspace_root: Option<PathBuf>,
+    ) -> AppResult<AgentRunResult> {
+        self.run_internal(
+            agent,
+            session,
+            None,
+            skill_instructions,
+            workspace_root,
+            false,
+            |request| {
+                app.emit("permission_request", &request).ok();
+            },
+        )
+        .await
+    }
+
+    pub async fn run_from_session_headless(
+        &self,
+        agent: &AgentRecord,
+        session: &SessionRecord,
+        skill_instructions: String,
+        workspace_root: Option<PathBuf>,
+    ) -> AppResult<AgentRunResult> {
+        self.run_internal(
+            agent,
+            session,
+            None,
+            skill_instructions,
+            workspace_root,
+            false,
             |_| {},
         )
         .await
@@ -80,20 +127,24 @@ impl AgentRuntime {
         &self,
         agent: &AgentRecord,
         session: &SessionRecord,
-        user_message: String,
+        user_message: Option<String>,
         skill_instructions: String,
         workspace_root: Option<PathBuf>,
+        append_user_message: bool,
         mut on_permission: F,
     ) -> AppResult<AgentRunResult>
     where
         F: FnMut(PermissionRequest),
     {
         self.agent_store.set_status(&agent.id, AgentStatus::Running)?;
-        let hooks = NoopHooks;
+        let hooks = TraceHooks::new(self.logs.clone());
         hooks.on_agent_start(&session.id);
 
-        self.session_manager
-            .append_message(&session.id, "user", &user_message, vec![])?;
+        if append_user_message {
+            let text = user_message.as_deref().unwrap_or_default();
+            self.session_manager
+                .append_message(&session.id, "user", text, vec![])?;
+        }
         let mut messages = self
             .session_manager
             .messages(&session.id)?
@@ -120,7 +171,19 @@ impl AgentRuntime {
             .provider_store
             .get_default()?
             .ok_or_else(|| crate::error::AppError::new("没有可用的默认 Provider"))?;
-        let provider = build_provider(provider_record)?;
+        let provider = build_provider(provider_record.clone())?;
+        let context_window = configured_context_window(
+            &self.context_window_overrides,
+            Some(&provider_record),
+            &agent.model,
+        )
+        .unwrap_or(
+            self.provider_store
+                .resolve_context_window_with_refresh(Some(&provider_record), &agent.model)
+                .await?,
+        );
+        self.session_manager
+            .update_context_max(&session.id, context_window)?;
 
         let mut tool_results = Vec::new();
         let mut permission_request = None;
@@ -144,12 +207,7 @@ impl AgentRuntime {
 
             self.session_manager.update_usage(
                 &session.id,
-                self.session_manager
-                    .get(&session.id)?
-                    .map(|item| item.context_tokens_used)
-                    .unwrap_or_default()
-                    + response.usage.input_tokens
-                    + response.usage.output_tokens,
+                response.usage.input_tokens,
             )?;
             hooks.on_after_llm_call(&response);
 
@@ -228,9 +286,12 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::db::sqlite::Database;
     use crate::harness::{budget::TokenBudget, permission::PermissionManager, sandbox::SandboxManager};
     use crate::llm::{model::{ProviderConfigInput, ProviderType}, store::ProviderStore};
+    use crate::logging::service::TraceLogService;
     use crate::session::manager::SessionManager;
     use crate::tools::registry::ToolRegistry;
 
@@ -271,9 +332,71 @@ mod tests {
             session_manager,
             permission_manager: PermissionManager::new(),
             budget: TokenBudget::new(100_000, 1_000_000),
+            logs: TraceLogService::new(db.clone()),
+            context_window_overrides: Default::default(),
         };
 
         let _ = runtime;
         let _ = session;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_runner_chat_simple() {
+        let endpoint = std::env::var("CODEFORGE_LIVE_LLM_ENDPOINT").expect("CODEFORGE_LIVE_LLM_ENDPOINT required");
+        let api_key = std::env::var("CODEFORGE_LIVE_LLM_API_KEY").expect("CODEFORGE_LIVE_LLM_API_KEY required");
+        let model = std::env::var("CODEFORGE_LIVE_LLM_MODEL").expect("CODEFORGE_LIVE_LLM_MODEL required");
+
+        let db_path = std::env::temp_dir().join(format!("codeforge-live-runner-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::new(&db_path).expect("db should initialize");
+        let agent_store = AgentStore::new(db.clone());
+        agent_store.ensure_default_agent().expect("default agent should exist");
+
+        let provider_store = ProviderStore::new(db.clone());
+        provider_store
+            .create(ProviderConfigInput {
+                name: "Live OpenAI Compatible".into(),
+                provider_type: ProviderType::OpenAiCompatible,
+                endpoint,
+                api_key: Some(api_key),
+                model: model.clone(),
+                models: vec![model.clone()],
+                enabled: true,
+                is_default: true,
+                headers: Default::default(),
+            })
+            .expect("provider should be stored");
+
+        let session_manager = SessionManager::new(db.clone());
+        let mut agent = agent_store.list().expect("agents should load")[0].clone();
+        agent.model = model;
+        let session = session_manager
+            .create(agent.id.clone(), Some("live-runner".into()))
+            .expect("session should be created");
+
+        let sandbox = SandboxManager::new(std::env::temp_dir().join(format!("codeforge-live-runner-sandbox-{}", uuid::Uuid::new_v4()))).expect("sandbox should initialize");
+        let runtime = AgentRuntime {
+            agent_store,
+            provider_store,
+            tool_registry: ToolRegistry::new(sandbox),
+            session_manager,
+            permission_manager: PermissionManager::new(),
+            budget: TokenBudget::new(100_000, 1_000_000),
+            logs: TraceLogService::new(db.clone()),
+            context_window_overrides: Default::default(),
+        };
+
+        let result = runtime
+            .run_headless(
+                &agent,
+                &session,
+                "你好".into(),
+                String::new(),
+                Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()),
+            )
+            .await
+            .expect("live runner chat should succeed");
+
+        assert!(!result.content.trim().is_empty());
     }
 }

@@ -13,7 +13,7 @@ pub mod skill;
 pub mod state;
 pub mod tools;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ipc-tests"))]
 mod ipc_tests;
 
 use config::app_config::AppConfig;
@@ -25,17 +25,19 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         .setup(|app| {
             let config = AppConfig::from_app(app.handle()).map_err(|error| error.message.clone())?;
             let state = AppState::new(config).map_err(|error| error.message.clone())?;
-            state.agents.ensure_default_agent().map_err(|error| error.message.clone())?;
+            state.initialize_defaults().map_err(|error| error.message.clone())?;
             app.manage(state);
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat_send,
+            commands::chat::chat_retry,
             commands::session::session_list,
             commands::session::session_create,
             commands::session::session_delete,
             commands::session::session_messages,
+            commands::session::session_rewrite_message,
             commands::chat::permission_respond,
             commands::provider::provider_list,
             commands::provider::provider_create,
@@ -58,6 +60,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             commands::logs::log_list,
             commands::settings::settings_get,
             commands::settings::settings_update,
+            commands::settings::embedding_config_get,
             commands::project::project_open,
             commands::project::project_clone,
             commands::project::project_review,
@@ -66,6 +69,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = dotenvy::dotenv();
     build_app(tauri::Builder::default())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

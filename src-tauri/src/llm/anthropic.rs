@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 
 use crate::error::{AppError, AppResult};
 
 use super::model::{ChatRequest, ChatResponse, ProviderRecord, StreamChunk, TokenUsage, ToolCall};
 use super::provider::LlmProvider;
-use super::streaming::consume_sse_chunks;
+use super::streaming::consume_sse_events;
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -131,6 +133,17 @@ impl AnthropicProvider {
     }
 }
 
+#[derive(Default)]
+struct PartialAnthropicToolCall {
+    id: String,
+    name: String,
+    input_json: String,
+}
+
+fn parse_partial_input(arguments: &str) -> serde_json::Value {
+    serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({ "raw": arguments }))
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn chat(&self, request: ChatRequest) -> AppResult<ChatResponse> {
@@ -155,28 +168,94 @@ impl LlmProvider for AnthropicProvider {
             .await?
             .error_for_status()?;
 
-        let mut chunks = consume_sse_chunks(response, |value| {
-            let delta = value
-                .get("delta")
-                .and_then(|delta| delta.get("text"))
-                .and_then(|text| text.as_str())
-                .or_else(|| {
-                    value
-                        .get("content_block")
-                        .and_then(|block| block.get("text"))
-                        .and_then(|text| text.as_str())
-                })
-                .unwrap_or_default()
-                .to_string();
+        let (events, done_seen) = consume_sse_events(response).await?;
+        let mut partial_tool_calls: BTreeMap<usize, PartialAnthropicToolCall> = BTreeMap::new();
+        let mut chunks = Vec::new();
 
-            (!delta.is_empty()).then_some(StreamChunk { delta, done: false })
-        })
-        .await?;
+        for event in events {
+            let event_type = event
+                .event
+                .clone()
+                .or_else(|| event.payload.get("type").and_then(|value| value.as_str()).map(ToOwned::to_owned))
+                .unwrap_or_default();
+            let mut delta = String::new();
+            let mut tool_calls = Vec::new();
+            let mut finish_reason = None;
 
-        if chunks.is_empty() {
+            match event_type.as_str() {
+                "content_block_start" => {
+                    if event.payload.get("content_block").and_then(|value| value.get("type")).and_then(|value| value.as_str()) == Some("tool_use") {
+                        let index = event.payload.get("index").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
+                        let block = event.payload.get("content_block").cloned().unwrap_or_else(|| serde_json::json!({}));
+                        let entry = partial_tool_calls.entry(index).or_default();
+                        entry.id = block.get("id").and_then(|value| value.as_str()).unwrap_or_default().to_string();
+                        entry.name = block.get("name").and_then(|value| value.as_str()).unwrap_or_default().to_string();
+                        if let Some(input) = block.get("input") {
+                            entry.input_json = input.to_string();
+                        }
+                        tool_calls.push(ToolCall {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            arguments: parse_partial_input(&entry.input_json),
+                        });
+                    }
+                }
+                "content_block_delta" => {
+                    delta = event
+                        .payload
+                        .get("delta")
+                        .and_then(|value| value.get("text"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+
+                    if let Some(partial_json) = event
+                        .payload
+                        .get("delta")
+                        .and_then(|value| value.get("partial_json"))
+                        .and_then(|value| value.as_str())
+                    {
+                        let index = event.payload.get("index").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
+                        let entry = partial_tool_calls.entry(index).or_default();
+                        entry.input_json.push_str(partial_json);
+                        tool_calls.push(ToolCall {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            arguments: parse_partial_input(&entry.input_json),
+                        });
+                    }
+                }
+                "message_delta" => {
+                    finish_reason = event
+                        .payload
+                        .get("delta")
+                        .and_then(|value| value.get("stop_reason"))
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned);
+                }
+                "message_stop" => {
+                    finish_reason = Some("stop".into());
+                }
+                _ => {}
+            }
+
+            let done = finish_reason.is_some();
+            if !delta.is_empty() || !tool_calls.is_empty() || done {
+                chunks.push(StreamChunk {
+                    delta,
+                    done,
+                    tool_calls,
+                    finish_reason,
+                });
+            }
+        }
+
+        if chunks.is_empty() || (!done_seen && !chunks.last().is_some_and(|chunk| chunk.done)) {
             chunks.push(StreamChunk {
                 delta: String::new(),
                 done: true,
+                tool_calls: vec![],
+                finish_reason: Some("stop".into()),
             });
         }
         Ok(chunks)
@@ -202,6 +281,7 @@ mod tests {
             extra: ProviderExtra {
                 models: vec!["claude-sonnet-4-5".into()],
                 headers: BTreeMap::new(),
+                context_windows: BTreeMap::new(),
             },
             enabled: true,
             is_default: false,

@@ -1,37 +1,90 @@
-import { useState, Fragment } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { ScrollText, Filter, ChevronRight, CheckCircle2, XCircle, ChevronDown } from 'lucide-react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { logList as fetchLogList, TraceLog } from '../lib/backend';
 import './PageCommon.css';
 
-const logs = [
-  { id: 'tr-001', agent: 'Orchestrator', action: '代码审查任务分发', status: 'success', tokens: 1240, time: '2026-04-06 00:05:12', duration: '3.2s' },
-  { id: 'tr-002', agent: 'Reviewer', action: 'analyze_ast → src/main.rs', status: 'success', tokens: 890, time: '2026-04-06 00:05:15', duration: '1.8s' },
-  { id: 'tr-003', agent: 'Reviewer', action: 'find_code_smells → 5 issues', status: 'success', tokens: 1560, time: '2026-04-06 00:05:17', duration: '2.4s' },
-  { id: 'tr-004', agent: 'Executor', action: 'run_shell → cargo test', status: 'error', tokens: 450, time: '2026-04-06 00:05:20', duration: '15.1s' },
-  { id: 'tr-005', agent: 'Refactorer', action: 'suggest_refactor → extract_function', status: 'success', tokens: 2100, time: '2026-04-06 00:05:35', duration: '4.7s' },
-];
+interface LogRow {
+  id: string;
+  agent: string;
+  action: string;
+  status: 'success' | 'error';
+  tokens: number;
+  time: string;
+  duration: string;
+  payload: Record<string, unknown>;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const readString = (value: Record<string, unknown>, key: string): string => {
+  const target = value[key];
+  return typeof target === 'string' ? target : '';
+};
+
+const readNumber = (value: Record<string, unknown>, key: string): number | null => {
+  const target = value[key];
+  return typeof target === 'number' ? target : null;
+};
+
+const toTimeText = (isoText: string): string => {
+  const parsed = new Date(isoText);
+  if (Number.isNaN(parsed.getTime())) {
+    return isoText;
+  }
+  return parsed.toLocaleString('zh-CN');
+};
+
+const toLogRow = (log: TraceLog): LogRow => {
+  const payload = isRecord(log.payload) ? log.payload : {};
+  const actionField = readString(payload, 'action') || readString(payload, 'name') || readString(payload, 'content') || readString(payload, 'query');
+  const statusField = readString(payload, 'status').toLowerCase();
+
+  return {
+    id: `tr-${String(log.id).padStart(3, '0')}`,
+    agent: readString(payload, 'agent') || log.kind,
+    action: actionField ? `${log.kind} → ${actionField}` : log.kind,
+    status: statusField === 'error' || log.kind.includes('error') ? 'error' : 'success',
+    tokens: readNumber(payload, 'tokens') ?? readNumber(payload, 'tokenCount') ?? 0,
+    time: toTimeText(log.createdAt),
+    duration: readString(payload, 'duration') || '-',
+    payload,
+  };
+};
 
 export default function Logs() {
-  const [logList, setLogList] = useState(logs);
+  const { t } = useAppPreferences();
+  const [limit, setLimit] = useState(20);
+  const [logList, setLogList] = useState<LogRow[]>([]);
   const [showFilter, setShowFilter] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
+  const loadLogs = useCallback(async (targetLimit: number) => {
+    try {
+      const data = await fetchLogList(targetLimit);
+      setLogList((data ?? []).map(toLogRow));
+    } catch {
+      setLogList([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLogs(limit);
+  }, [limit, loadLogs]);
+
   const handleLoadMore = () => {
-    setLogList([...logList, {
-      id: `tr-00${logList.length + 1}`,
-      agent: 'System',
-      action: 'Older logs loaded',
-      status: 'success',
-      tokens: 0,
-      time: '2026-04-06 00:00:00',
-      duration: '0s'
-    }]);
+    setLimit((prev) => prev + 20);
   };
+
+  const totalTokens = logList.reduce((sum, log) => sum + log.tokens, 0);
 
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><ScrollText size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 执行日志</h1>
-        <p>Agent 执行 trace、工具调用日志、Token 消耗明细</p>
+        <h1><ScrollText size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.logs')}</h1>
+        <p>{t('page.logs.desc')}</p>
       </div>
 
       <div className="page-toolbar">
@@ -39,7 +92,7 @@ export default function Logs() {
           <Filter size={16} /> 筛选
         </button>
         <div style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--text-secondary)' }}>
-          总计消耗: <strong style={{ color: 'var(--accent-orange-light)' }}>6,240</strong> tokens
+          总计消耗: <strong style={{ color: 'var(--accent-orange-light)' }}>{totalTokens.toLocaleString('zh-CN')}</strong> tokens
         </div>
       </div>
 
@@ -104,7 +157,7 @@ export default function Logs() {
                       <div style={{ padding: 16 }}>
                         <div style={{ fontSize: 14, fontWeight: 'bold', marginBottom: 8 }}>详细执行参数和结果</div>
                         <pre style={{ fontSize: 12, color: 'var(--accent-green-light)', background: 'var(--bg-card)', padding: 12, borderRadius: 6, border: '1px solid var(--border-color)', overflowX: 'auto' }}>
-                          {'"args": {\n  "pattern": "unwrap()",\n  "path": "/src/"\n}\n"result": {\n  "matches": 5,\n  "files": 2\n}'}
+                          {JSON.stringify(log.payload, null, 2)}
                         </pre>
                       </div>
                     </td>

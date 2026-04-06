@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "codeforge",
-        "width": 800,
-        "height": 600
+        "title": "CodeForge",
+        "width": 1280,
+        "height": 720,
+        "decorations": false,
+        "transparent": false
       }
     ],
     "security": {

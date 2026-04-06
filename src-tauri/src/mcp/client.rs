@@ -30,10 +30,9 @@ impl McpClient {
     }
 
     pub fn initialize(&self) -> AppResult<serde_json::Value> {
-        let responses = exchange_stdio(
-            &self.command,
-            &self.args,
-            &[serde_json::json!({
+        self.exchange_with_initialize(
+            1,
+            serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
@@ -42,37 +41,22 @@ impl McpClient {
                     "capabilities": {},
                     "clientInfo": { "name": "codeforge", "version": "0.1.0" }
                 }
-            })],
-        )?;
-
-        responses
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::new("MCP initialize 未返回结果"))
+            }),
+        )?
+        .into_iter()
+        .find(|value| value.get("id").and_then(|id| id.as_i64()) == Some(1))
+        .ok_or_else(|| AppError::new("MCP initialize 未返回结果"))
     }
 
     pub fn list_tools(&self) -> AppResult<Vec<McpToolInfo>> {
-        let responses = exchange_stdio(
-            &self.command,
-            &self.args,
-            &[
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": { "name": "codeforge", "version": "0.1.0" }
-                    }
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/list",
-                    "params": {}
-                }),
-            ],
+        let responses = self.exchange_with_initialize(
+            2,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            }),
         )?;
 
         let payload = responses
@@ -113,30 +97,17 @@ impl McpClient {
         name: &str,
         arguments: serde_json::Value,
     ) -> AppResult<serde_json::Value> {
-        let responses = exchange_stdio(
-            &self.command,
-            &self.args,
-            &[
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": { "name": "codeforge", "version": "0.1.0" }
-                    }
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "tools/call",
-                    "params": {
-                        "name": name,
-                        "arguments": arguments,
-                    }
-                }),
-            ],
+        let responses = self.exchange_with_initialize(
+            3,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": arguments,
+                }
+            }),
         )?;
 
         responses
@@ -146,27 +117,14 @@ impl McpClient {
     }
 
     pub fn list_resources(&self) -> AppResult<Vec<McpResourceInfo>> {
-        let responses = exchange_stdio(
-            &self.command,
-            &self.args,
-            &[
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": { "name": "codeforge", "version": "0.1.0" }
-                    }
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 4,
-                    "method": "resources/list",
-                    "params": {}
-                }),
-            ],
+        let responses = self.exchange_with_initialize(
+            4,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "resources/list",
+                "params": {}
+            }),
         )?;
 
         let payload = responses
@@ -202,6 +160,27 @@ impl McpClient {
     }
 
     pub fn read_resource(&self, uri: &str) -> AppResult<serde_json::Value> {
+        let responses = self.exchange_with_initialize(
+            5,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "resources/read",
+                "params": { "uri": uri }
+            }),
+        )?;
+
+        responses
+            .into_iter()
+            .find(|value| value.get("id").and_then(|id| id.as_i64()) == Some(5))
+            .ok_or_else(|| AppError::new("MCP resources/read 未返回结果"))
+    }
+
+    fn exchange_with_initialize(
+        &self,
+        request_id: i64,
+        request: serde_json::Value,
+    ) -> AppResult<Vec<serde_json::Value>> {
         let responses = exchange_stdio(
             &self.command,
             &self.args,
@@ -218,17 +197,22 @@ impl McpClient {
                 }),
                 serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": 5,
-                    "method": "resources/read",
-                    "params": { "uri": uri }
+                    "method": "notifications/initialized",
+                    "params": {}
                 }),
+                request,
             ],
         )?;
 
-        responses
+        Ok(responses
             .into_iter()
-            .find(|value| value.get("id").and_then(|id| id.as_i64()) == Some(5))
-            .ok_or_else(|| AppError::new("MCP resources/read 未返回结果"))
+            .filter(|value| {
+                value
+                    .get("id")
+                    .and_then(|id| id.as_i64())
+                    .is_some_and(|id| id == 1 || id == request_id)
+            })
+            .collect::<Vec<_>>())
     }
 }
 

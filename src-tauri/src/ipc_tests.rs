@@ -3,9 +3,11 @@ use tauri::ipc::InvokeBody;
 use tauri::test::{
     get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY,
 };
+use tauri::Manager;
 use tauri::WebviewWindowBuilder;
 
 use crate::build_app;
+use crate::state::AppState;
 
 fn invoke<T: DeserializeOwned>(
     webview: &tauri::WebviewWindow<MockRuntime>,
@@ -90,6 +92,19 @@ fn full_chain_invoke_live() {
         .parent()
         .expect("repo root should exist")
         .to_path_buf();
+    let _: () = invoke(
+        &webview,
+        "settings_update",
+        serde_json::json!({
+            "settings": {
+                "theme": "dark",
+                "language": "zh-CN",
+                "projectPath": repo_root.display().to_string(),
+                "skillsPath": null,
+                "contextWindowOverrides": {}
+            }
+        }),
+    );
     let lib_rs = repo_root.join("src-tauri").join("src").join("lib.rs");
 
     let tool_output: String = invoke(
@@ -107,8 +122,22 @@ fn full_chain_invoke_live() {
         "chat_send",
         serde_json::json!({
             "sessionId": session_id,
-            "message": format!("请先调用 read_file 读取路径 {}，再只回复文件里注册的第一个 command 名称。", lib_rs.display())
+            "message": "必须使用 run_shell 工具运行命令 `dir` 列出当前工作目录文件，然后用一句话总结。"
         }),
+    );
+    let app_state = webview.app_handle().state::<AppState>();
+    let pending_id = app_state
+        .pending_permissions
+        .lock()
+        .expect("pending permissions lock should succeed")
+        .keys()
+        .next()
+        .cloned()
+        .expect("permission request should be stored");
+    let _: () = invoke(
+        &webview,
+        "permission_respond",
+        serde_json::json!({ "requestId": pending_id, "approved": true }),
     );
     let messages: serde_json::Value = invoke(
         &webview,
@@ -116,6 +145,7 @@ fn full_chain_invoke_live() {
         serde_json::json!({ "id": session_id }),
     );
     println!("IPC_CHAT_MESSAGES={}", messages);
+    assert!(messages.as_array().is_some_and(|items| items.len() >= 3));
 
     let _: () = invoke(
         &webview,
@@ -136,4 +166,5 @@ fn full_chain_invoke_live() {
     );
     let logs: serde_json::Value = invoke(&webview, "log_list", serde_json::json!({ "limit": 10 }));
     println!("IPC_LOG_LIST={}", logs);
+    assert!(logs.to_string().contains("project_review"));
 }

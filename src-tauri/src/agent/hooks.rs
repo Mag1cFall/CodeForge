@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::llm::model::ChatResponse;
+use crate::logging::service::TraceLogService;
 use crate::tools::schema::ToolSchema;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -49,6 +50,82 @@ pub trait AgentHooks: Send + Sync {
 pub struct NoopHooks;
 
 impl AgentHooks for NoopHooks {}
+
+#[derive(Debug, Clone)]
+pub struct TraceHooks {
+    logs: TraceLogService,
+}
+
+impl TraceHooks {
+    pub fn new(logs: TraceLogService) -> Self {
+        Self { logs }
+    }
+
+    fn record(&self, event_type: &str, payload: serde_json::Value) {
+        let _ = self.logs.record(
+            "agent_hook",
+            serde_json::json!({
+                "eventType": event_type,
+                "payload": payload,
+            }),
+        );
+    }
+}
+
+impl AgentHooks for TraceHooks {
+    fn on_agent_start(&self, session_id: &str) {
+        self.record(
+            "agent_start",
+            serde_json::json!({ "sessionId": session_id }),
+        );
+    }
+
+    fn on_before_llm_call(&self, message_count: usize) {
+        self.record(
+            "before_llm_call",
+            serde_json::json!({ "messageCount": message_count }),
+        );
+    }
+
+    fn on_after_llm_call(&self, response: &ChatResponse) {
+        self.record(
+            "after_llm_call",
+            serde_json::json!({
+                "model": response.model,
+                "finishReason": response.finish_reason,
+                "inputTokens": response.usage.input_tokens,
+                "outputTokens": response.usage.output_tokens,
+            }),
+        );
+    }
+
+    fn on_before_tool_exec(&self, tool: &ToolSchema) {
+        self.record(
+            "before_tool_exec",
+            serde_json::json!({ "toolName": tool.name }),
+        );
+    }
+
+    fn on_after_tool_exec(&self, tool: &ToolSchema, result: &str) {
+        self.record(
+            "after_tool_exec",
+            serde_json::json!({
+                "toolName": tool.name,
+                "outputPreview": preview(result),
+            }),
+        );
+    }
+
+    fn on_agent_end(&self, session_id: &str, response: &str) {
+        self.record(
+            "agent_end",
+            serde_json::json!({
+                "sessionId": session_id,
+                "responsePreview": preview(response),
+            }),
+        );
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RecordingHooks {

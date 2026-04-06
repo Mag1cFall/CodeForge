@@ -1,40 +1,90 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Plug, Plus, CheckCircle2, XCircle, RefreshCw, ExternalLink } from 'lucide-react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { mcpServerList, mcpServerAdd, mcpServerTools, McpServerRecord } from '../lib/backend';
 import './PageCommon.css';
 
-const servers = [
-  { name: 'eslint-mcp', transport: 'stdio', status: 'connected', tools: 3, resources: 1 },
-  { name: 'github-mcp', transport: 'sse', status: 'connected', tools: 8, resources: 5 },
-  { name: 'postgres-mcp', transport: 'stdio', status: 'disconnected', tools: 6, resources: 2 },
-];
+interface ServerView extends McpServerRecord {
+  status: 'connected' | 'disconnected';
+  tools: number;
+  resources: number;
+}
 
 export default function MCP() {
-  const [serverList, setServerList] = useState(servers);
+  const { t } = useAppPreferences();
+  const [serverList, setServerList] = useState<ServerView[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [form, setForm] = useState({ name: '', transport: 'stdio', cmdOrUrl: '', autoDiscover: true });
 
-  const handleRefresh = () => {
+  const loadServers = useCallback(async () => {
+    try {
+      const servers = await mcpServerList();
+      const next = await Promise.all(
+        (servers ?? []).map(async (server) => {
+          let toolCount = 0;
+          const status: ServerView['status'] = server.enabled ? 'connected' : 'disconnected';
+          try {
+            const tools = await mcpServerTools(server.id);
+            toolCount = tools.length;
+          } catch {
+            toolCount = 0;
+          }
+
+          return {
+            ...server,
+            status,
+            tools: toolCount,
+            resources: 0,
+          };
+        })
+      );
+      setServerList(next);
+    } catch {
+      setServerList([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadServers();
+  }, [loadServers]);
+
+  const handleRefresh = async () => {
     setRefreshing(true);
-    setTimeout(() => {
-      setServerList([...serverList]);
+    try {
+      await loadServers();
+    } finally {
       setRefreshing(false);
-    }, 1000);
+    }
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (form.name && form.cmdOrUrl) {
-      setServerList([...serverList, { name: form.name, transport: form.transport, status: 'disconnected', tools: 0, resources: 0 }]);
-      setShowForm(false);
-      setForm({ name: '', transport: 'stdio', cmdOrUrl: '', autoDiscover: true });
+      try {
+        await mcpServerAdd({
+          name: form.name,
+          transport: form.transport,
+          command: form.transport === 'stdio' ? form.cmdOrUrl : null,
+          url: form.transport === 'sse' ? form.cmdOrUrl : null,
+          args: [],
+          env: {},
+          headers: {},
+          enabled: true,
+        });
+        setShowForm(false);
+        setForm({ name: '', transport: 'stdio', cmdOrUrl: '', autoDiscover: true });
+        await loadServers();
+      } catch {
+        setServerList([]);
+      }
     }
   };
 
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><Plug size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> MCP 服务</h1>
-        <p>管理 Model Context Protocol 服务器，扩展 Agent 能力边界</p>
+        <h1><Plug size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.mcp')}</h1>
+        <p>{t('page.mcp.desc')}</p>
       </div>
       <div className="page-toolbar">
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
@@ -90,7 +140,7 @@ export default function MCP() {
           </thead>
           <tbody>
             {serverList.map((s) => (
-              <tr key={s.name}>
+              <tr key={s.id}>
                 <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{s.name}</td>
                 <td><span className="badge badge-purple">{s.transport}</span></td>
                 <td>
@@ -103,7 +153,7 @@ export default function MCP() {
                 <td>{s.tools}</td>
                 <td>{s.resources}</td>
                 <td>
-                  <button className="btn btn-sm btn-ghost" onClick={() => alert(`Details for ${s.name} (Mock)`)}><ExternalLink size={14} /></button>
+                  <button className="btn btn-sm btn-ghost" onClick={() => alert(`Details for ${s.name}`)}><ExternalLink size={14} /></button>
                 </td>
               </tr>
             ))}

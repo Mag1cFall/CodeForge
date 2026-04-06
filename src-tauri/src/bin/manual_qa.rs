@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tools = ToolRegistry::new(sandbox.clone());
     let knowledge = KnowledgeService::new(KnowledgeStore::new(db.clone()));
     let skills = SkillManager::new(db.clone());
-    let _ = skills.sync_from_dir(&repo_root.join("skills"));
+    let _ = skills.sync_from_dir(&repo_root.join("skills"), false);
 
     agents.ensure_default_agent()?;
     let provider = providers.create(ProviderConfigInput {
@@ -56,6 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_manager: sessions.clone(),
         permission_manager: PermissionManager::new(),
         budget: TokenBudget::new(128_000, 2_000_000),
+        logs: logs.clone(),
+        context_window_overrides: Default::default(),
     };
 
     let lib_rs = repo_root.join("src-tauri").join("src").join("lib.rs");
@@ -66,16 +68,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     logs.record("tool", serde_json::json!({ "name": "read_file", "preview": tool_output.lines().take(3).collect::<Vec<_>>() }))?;
 
-    let chat = runtime
+    let permission_run = runtime
         .run_headless(
             &agent,
             &session,
-            format!("请先调用 read_file 读取路径 {}，再只回复文件里注册的第一个 command 名称。", lib_rs.display()),
+            "必须使用 run_shell 工具执行 `dir` 列出当前目录文件，然后只用一句话总结。".into(),
             skills.active_instructions().unwrap_or_default(),
             Some(repo_root.clone()),
         )
         .await?;
-    logs.record("chat", serde_json::json!({ "content": chat.content, "toolResults": chat.tool_results }))?;
+    let permission = permission_run
+        .permission_request
+        .clone()
+        .expect("permission flow should request approval");
+    logs.record("chat_permission", serde_json::json!({ "request": permission }))?;
+
+    let approved_output = tools.execute(
+        &permission.tool_name,
+        permission.args.clone(),
+        &ToolExecutionContext {
+            workspace_root: Some(repo_root.clone()),
+        },
+    )?;
+    let tool_payload = serde_json::json!({
+        "id": permission.id,
+        "name": permission.tool_name,
+        "result": approved_output,
+    });
+    sessions.append_message(
+        &session.id,
+        "assistant",
+        &format!("Tool result:\n{}", tool_payload["result"].as_str().unwrap_or_default()),
+        vec![tool_payload.clone()],
+    )?;
+
+    let chat = runtime
+        .run_from_session_headless(
+            &agent,
+            &session,
+            skills.active_instructions().unwrap_or_default(),
+            Some(repo_root.clone()),
+        )
+        .await?;
+    logs.record("chat", serde_json::json!({ "content": chat.content, "toolResults": chat.tool_results, "approvedTool": tool_payload }))?;
 
     let indexed = knowledge.index_repo(&repo_root)?;
     let search = knowledge.search("agent loop", 3)?;

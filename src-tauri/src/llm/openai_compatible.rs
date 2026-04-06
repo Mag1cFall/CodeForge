@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 
 use crate::error::{AppError, AppResult};
 
 use super::model::{ChatRequest, ChatResponse, ProviderRecord, StreamChunk, TokenUsage, ToolCall};
 use super::provider::LlmProvider;
-use super::streaming::consume_sse_chunks;
+use super::streaming::consume_sse_events;
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleProvider {
@@ -40,6 +42,17 @@ impl OpenAiCompatibleProvider {
         }
 
         Ok(headers)
+    }
+
+    fn endpoint(&self) -> String {
+        if self.record.endpoint.ends_with("/chat/completions") {
+            self.record.endpoint.clone()
+        } else {
+            format!(
+                "{}/chat/completions",
+                self.record.endpoint.trim_end_matches('/')
+            )
+        }
     }
 
     fn build_payload(&self, request: &ChatRequest, stream: bool) -> serde_json::Value {
@@ -164,12 +177,23 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn parse_tool_arguments(arguments: &str) -> serde_json::Value {
+    serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({ "raw": arguments }))
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiCompatibleProvider {
     async fn chat(&self, request: ChatRequest) -> AppResult<ChatResponse> {
         let response = self
             .client
-            .post(&self.record.endpoint)
+            .post(self.endpoint())
             .headers(self.build_headers()?)
             .json(&self.build_payload(&request, false))
             .send()
@@ -182,31 +206,80 @@ impl LlmProvider for OpenAiCompatibleProvider {
     async fn chat_stream(&self, request: ChatRequest) -> AppResult<Vec<StreamChunk>> {
         let response = self
             .client
-            .post(&self.record.endpoint)
+            .post(self.endpoint())
             .headers(self.build_headers()?)
             .json(&self.build_payload(&request, true))
             .send()
             .await?
             .error_for_status()?;
 
-        let mut chunks = consume_sse_chunks(response, |value| {
-            let delta = value
-                .get("choices")
-                .and_then(|choices| choices.get(0))
-                .and_then(|choice| choice.get("delta"))
-                .and_then(|delta| delta.get("content"))
+        let (events, done_seen) = consume_sse_events(response).await?;
+        let mut partial_tool_calls: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+        let mut chunks = Vec::new();
+
+        for event in events {
+            let Some(choice) = event.payload.get("choices").and_then(|choices| choices.get(0)) else {
+                continue;
+            };
+            let delta_payload = choice.get("delta").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let delta_text = delta_payload
+                .get("content")
                 .and_then(|content| content.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let finish_reason = choice
+                .get("finish_reason")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned);
 
-            (!delta.is_empty()).then_some(StreamChunk { delta, done: false })
-        })
-        .await?;
+            let mut tool_calls = Vec::new();
+            if let Some(items) = delta_payload.get("tool_calls").and_then(|value| value.as_array()) {
+                for item in items {
+                    let index = item.get("index").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
+                    let entry = partial_tool_calls.entry(index).or_default();
+                    if let Some(id) = item.get("id").and_then(|value| value.as_str()) {
+                        entry.id = id.to_string();
+                    }
+                    if let Some(name) = item
+                        .get("function")
+                        .and_then(|value| value.get("name"))
+                        .and_then(|value| value.as_str())
+                    {
+                        entry.name = name.to_string();
+                    }
+                    if let Some(arguments) = item
+                        .get("function")
+                        .and_then(|value| value.get("arguments"))
+                        .and_then(|value| value.as_str())
+                    {
+                        entry.arguments.push_str(arguments);
+                    }
 
-        if chunks.is_empty() {
+                    tool_calls.push(ToolCall {
+                        id: entry.id.clone(),
+                        name: entry.name.clone(),
+                        arguments: parse_tool_arguments(&entry.arguments),
+                    });
+                }
+            }
+
+            let done = finish_reason.is_some();
+            if !delta_text.is_empty() || !tool_calls.is_empty() || done {
+                chunks.push(StreamChunk {
+                    delta: delta_text,
+                    done,
+                    tool_calls,
+                    finish_reason,
+                });
+            }
+        }
+
+        if chunks.is_empty() || (!done_seen && !chunks.last().is_some_and(|chunk| chunk.done)) {
             chunks.push(StreamChunk {
                 delta: String::new(),
                 done: true,
+                tool_calls: vec![],
+                finish_reason: Some("stop".into()),
             });
         }
 
@@ -233,6 +306,7 @@ mod tests {
             extra: ProviderExtra {
                 models: vec!["gpt-5.4-mini".into()],
                 headers: BTreeMap::new(),
+                context_windows: BTreeMap::new(),
             },
             enabled: true,
             is_default: true,
@@ -282,6 +356,7 @@ mod tests {
             extra: ProviderExtra {
                 models: vec![model.clone()],
                 headers: BTreeMap::new(),
+                context_windows: BTreeMap::new(),
             },
             enabled: true,
             is_default: true,

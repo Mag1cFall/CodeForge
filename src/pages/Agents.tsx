@@ -1,18 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Bot, Plus, Play, Square, Settings2, Cpu } from 'lucide-react';
-import { agentList, AgentRecord } from '../lib/backend';
+import { useAppPreferences } from '../lib/app-preferences';
+import { agentList, agentStart, agentStop, AgentRecord } from '../lib/backend';
 import './PageCommon.css';
 
-const mockAgents: AgentRecord[] = [
-  { id: '1', name: 'Orchestrator', instructions: '编排者', status: 'running', model: 'claude-opus-4-6', tools: ['all'], createdAt: '', updatedAt: '' },
-  { id: '2', name: 'Reviewer', instructions: '审查者', status: 'running', model: 'claude-sonnet-4-6', tools: ['read_file', 'analyze_ast'], createdAt: '', updatedAt: '' },
-  { id: '3', name: 'Refactorer', instructions: '重构者', status: 'idle', model: 'gpt-5.4', tools: ['write_file'], createdAt: '', updatedAt: '' },
-  { id: '4', name: 'Researcher', instructions: '研究者', status: 'running', model: 'gemini-3.1-pro', tools: ['search_web'], createdAt: '', updatedAt: '' },
-  { id: '5', name: 'Executor', instructions: '执行者', status: 'stopped', model: 'deepseek-v3.2', tools: ['run_shell'], createdAt: '', updatedAt: '' },
-];
-
 export default function Agents() {
-  const [agents, setAgents] = useState<AgentRecord[]>(mockAgents);
+  const { t } = useAppPreferences();
+  const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', instructions: '', model: 'claude-sonnet-4-5', tools: ['fs', 'shell'] });
@@ -20,11 +14,9 @@ export default function Agents() {
   const loadAgents = useCallback(async () => {
     try {
       const data = await agentList();
-      if (data && data.length > 0) {
-        setAgents(data);
-      }
+      setAgents(data ?? []);
     } catch {
-      console.warn('Failed to fetch agents, using mock data');
+      setAgents([]);
     }
   }, []);
 
@@ -32,10 +24,17 @@ export default function Agents() {
     void loadAgents();
   }, [loadAgents]);
 
-  const toggleStatus = (id: string, currentStatus: string) => {
-    setAgents(prev => prev.map(a => 
-      a.id === id ? { ...a, status: currentStatus === 'running' ? 'stopped' : 'running' } : a
-    ));
+  const toggleStatus = async (id: string, currentStatus: string) => {
+    try {
+      if (currentStatus === 'running') {
+        await agentStop(id);
+      } else {
+        await agentStart(id);
+      }
+      await loadAgents();
+    } catch {
+      setAgents([]);
+    }
   };
 
   const handleSave = () => {
@@ -71,8 +70,8 @@ export default function Agents() {
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><Bot size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> Agent 管理</h1>
-        <p>配置和管理 AI Agent 角色、指令和工具权限</p>
+        <h1><Bot size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.agents')}</h1>
+        <p>{t('page.agents.desc')}</p>
       </div>
 
       <div className="page-toolbar">
@@ -113,7 +112,7 @@ export default function Agents() {
 
       <div className="card-grid">
         {agents.map((agent) => (
-          <div key={agent.name} className="card card-glow agent-card">
+          <div key={agent.id} className="card card-glow agent-card">
             <div className="agent-card-header">
               <div className="agent-avatar"><Bot size={22} /></div>
               <div>

@@ -5,7 +5,13 @@ use rusqlite::{params, OptionalExtension};
 use crate::db::sqlite::Database;
 use crate::error::AppResult;
 
-use super::loader::{load_skill, SkillRecord};
+use super::loader::{load_skill_with_default, SkillRecord};
+
+#[derive(Debug, Clone, Copy)]
+pub struct SkillSyncSource<'a> {
+    pub root: &'a Path,
+    pub default_enabled: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct SkillManager {
@@ -17,7 +23,7 @@ impl SkillManager {
         Self { db }
     }
 
-    pub fn sync_from_dir(&self, root: &Path) -> AppResult<Vec<SkillRecord>> {
+    pub fn sync_from_dir(&self, root: &Path, default_enabled: bool) -> AppResult<Vec<SkillRecord>> {
         if !root.exists() {
             std::fs::create_dir_all(root)?;
         }
@@ -29,7 +35,7 @@ impl SkillManager {
                 continue;
             }
 
-            let mut skill = load_skill(entry.path())?;
+            let mut skill = load_skill_with_default(entry.path(), default_enabled)?;
             if let Some(existing) = self.get_by_name(&skill.name)? {
                 skill.enabled = existing.enabled;
                 skill.id = existing.id;
@@ -38,6 +44,31 @@ impl SkillManager {
             skills.push(skill);
         }
         Ok(skills)
+    }
+
+    pub fn sync_from_dirs(&self, roots: &[SkillSyncSource<'_>]) -> AppResult<Vec<SkillRecord>> {
+        let mut merged = Vec::new();
+        for source in roots {
+            merged.extend(self.sync_from_dir(source.root, source.default_enabled)?);
+        }
+        Ok(merged)
+    }
+
+    pub fn ensure_default_skill_files(&self, root: &Path) -> AppResult<()> {
+        if !root.exists() {
+            std::fs::create_dir_all(root)?;
+        }
+
+        for (name, content) in default_skill_files() {
+            let skill_dir = root.join(name);
+            std::fs::create_dir_all(&skill_dir)?;
+            let skill_file = skill_dir.join("SKILL.md");
+            if !skill_file.exists() {
+                std::fs::write(skill_file, content)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn list(&self) -> AppResult<Vec<SkillRecord>> {
@@ -82,13 +113,38 @@ impl SkillManager {
     }
 
     pub fn active_instructions(&self) -> AppResult<String> {
-        Ok(self
+        let skills = self
             .list()?
             .into_iter()
             .filter(|skill| skill.enabled && !skill.instructions.trim().is_empty())
-            .map(|skill| format!("[{}]\n{}", skill.name, skill.instructions))
-            .collect::<Vec<_>>()
-            .join("\n\n"))
+            .collect::<Vec<_>>();
+
+        if skills.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut lines = vec![
+            "## Skills".to_string(),
+            "可用技能如下。默认只阅读名称、描述与文件路径；只有当任务明确匹配时，才使用 read_file 打开对应 SKILL.md 读取全文。".to_string(),
+            "不要一次性读取所有技能文件，也不要把全部技能正文塞进上下文。".to_string(),
+            String::new(),
+            "### Enabled skills".to_string(),
+        ];
+
+        for skill in skills {
+            lines.push(format!(
+                "- {}: {}\n  File: {}",
+                skill.name,
+                if skill.description.trim().is_empty() {
+                    "No description"
+                } else {
+                    skill.description.trim()
+                },
+                skill.path.display()
+            ));
+        }
+
+        Ok(lines.join("\n"))
     }
 
     fn upsert(&self, skill: &SkillRecord) -> AppResult<()> {
@@ -145,5 +201,67 @@ impl SkillManager {
             })
             .optional()?;
         Ok(skill)
+    }
+}
+
+fn default_skill_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "code-review",
+            "---\nname: code-review\ndescription: 全面的代码质量审查\ntools:\n  - read_file\n  - search_code\n  - analyze_ast\n  - find_code_smells\n---\n聚焦错误处理、复杂度、命名、可维护性与潜在风险，给出可执行建议。\n",
+        ),
+        (
+            "best-practices",
+            "---\nname: best-practices\ndescription: 语言与框架最佳实践建议\ntools:\n  - read_file\n  - search_code\n  - grep_pattern\n---\n根据当前项目栈总结主流写法、约束条件与推荐模式。\n",
+        ),
+        (
+            "security-audit",
+            "---\nname: security-audit\ndescription: 常见安全问题审计\ntools:\n  - read_file\n  - grep_pattern\n  - find_code_smells\n---\n重点检查凭据泄露、危险命令、输入处理与权限边界。\n",
+        ),
+        (
+            "refactoring",
+            "---\nname: refactoring\ndescription: 结构重整与重构建议\ntools:\n  - read_file\n  - suggest_refactor\n  - apply_patch\n---\n优先控制修改范围，拆分复杂逻辑，保持行为一致与代码清晰。\n",
+        ),
+        (
+            "documentation",
+            "---\nname: documentation\ndescription: 文档与说明文字整理\ntools:\n  - read_file\n  - write_file\n---\n为功能、配置和使用方式生成简洁准确的文档内容。\n",
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::sqlite::Database;
+
+    use super::*;
+
+    #[test]
+    fn active_instructions_use_inventory_not_full_body() {
+        let db_path = std::env::temp_dir().join(format!(
+            "codeforge-skill-manager-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::new(&db_path).expect("db should initialize");
+        let manager = SkillManager::new(db);
+        let root =
+            std::env::temp_dir().join(format!("codeforge-skill-root-{}", uuid::Uuid::new_v4()));
+        let skill_dir = root.join("demo-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir should exist");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: demo description\n---\nTHIS IS A VERY LONG BODY THAT SHOULD NOT BE INJECTED",
+        )
+        .expect("skill file should exist");
+
+        manager
+            .sync_from_dir(&root, true)
+            .expect("skills should sync");
+
+        let prompt = manager
+            .active_instructions()
+            .expect("active skill prompt should build");
+        assert!(prompt.contains("demo-skill"));
+        assert!(prompt.contains("demo description"));
+        assert!(!prompt.contains("VERY LONG BODY"));
     }
 }

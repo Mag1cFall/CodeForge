@@ -48,6 +48,13 @@ pub fn find_code_smells(root: &Path) -> AppResult<Vec<serde_json::Value>> {
         if !entry.file_type().is_file() {
             continue;
         }
+        let path_str = entry.path().to_string_lossy();
+        if [".git", "node_modules", "target", "dist", "build", ".next"]
+            .iter()
+            .any(|seg| path_str.contains(seg))
+        {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(entry.path()) else {
             continue;
         };

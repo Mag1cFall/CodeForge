@@ -54,22 +54,9 @@ impl AgentStore {
             return Ok(());
         }
 
-        let _ = self.create(AgentConfigInput {
-            name: "Orchestrator".into(),
-            instructions: Some(
-                "You are CodeForge's orchestrator agent for code analysis and review.".into(),
-            ),
-            tools: vec![
-                "read_file".into(),
-                "list_directory".into(),
-                "search_code".into(),
-                "grep_pattern".into(),
-                "analyze_ast".into(),
-                "find_code_smells".into(),
-                "suggest_refactor".into(),
-            ],
-            model: "gpt-5.4-mini".into(),
-        })?;
+        for config in default_agents() {
+            let _ = self.create(config)?;
+        }
         Ok(())
     }
 
@@ -193,6 +180,66 @@ fn status_string(status: &AgentStatus) -> &'static str {
     }
 }
 
+fn default_agents() -> Vec<AgentConfigInput> {
+    vec![
+        AgentConfigInput {
+            name: "Orchestrator".into(),
+            instructions: Some("负责拆解任务、分配执行顺序，并汇总多模块结果。".into()),
+            tools: vec![
+                "read_file".into(),
+                "list_directory".into(),
+                "search_code".into(),
+                "grep_pattern".into(),
+                "analyze_ast".into(),
+                "find_code_smells".into(),
+                "suggest_refactor".into(),
+            ],
+            model: "gpt-5.4".into(),
+        },
+        AgentConfigInput {
+            name: "Reviewer".into(),
+            instructions: Some("专注于代码审查、问题定位、复杂度分析与风险提示。".into()),
+            tools: vec![
+                "read_file".into(),
+                "search_code".into(),
+                "grep_pattern".into(),
+                "analyze_ast".into(),
+                "check_complexity".into(),
+                "find_code_smells".into(),
+            ],
+            model: "claude-sonnet-4-6".into(),
+        },
+        AgentConfigInput {
+            name: "Refactorer".into(),
+            instructions: Some("专注于生成结构清晰、风险可控的重构建议与补丁。".into()),
+            tools: vec![
+                "read_file".into(),
+                "write_file".into(),
+                "apply_patch".into(),
+                "suggest_refactor".into(),
+            ],
+            model: "gpt-5.4-mini".into(),
+        },
+        AgentConfigInput {
+            name: "Researcher".into(),
+            instructions: Some("负责检索仓库上下文、总结模式，并提供技术背景说明。".into()),
+            tools: vec![
+                "read_file".into(),
+                "list_directory".into(),
+                "search_code".into(),
+                "grep_pattern".into(),
+            ],
+            model: "gemini-3.1-pro".into(),
+        },
+        AgentConfigInput {
+            name: "Executor".into(),
+            instructions: Some("负责在隔离工作区执行命令、运行测试并反馈结果。".into()),
+            tools: vec!["run_shell".into(), "run_tests".into(), "read_file".into()],
+            model: "deepseek-v3.2".into(),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +254,6 @@ mod tests {
         store
             .ensure_default_agent()
             .expect("default agent should exist");
-        assert_eq!(store.list().expect("agents should load").len(), 1);
+        assert_eq!(store.list().expect("agents should load").len(), 5);
     }
 }

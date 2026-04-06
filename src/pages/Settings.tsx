@@ -1,33 +1,80 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Moon, FolderOpen, Shield, Save, Settings2, CheckCircle2 } from 'lucide-react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { normalizeTheme } from '../lib/i18n';
+import { settingsGet, settingsUpdate } from '../lib/backend';
 import './PageCommon.css';
 
 export default function SettingsPage() {
-  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
-  const [lang, setLang] = useState(localStorage.getItem('lang') || 'zh');
-  const [projectPath, setProjectPath] = useState(localStorage.getItem('projectPath') || 'C:\\Users\\l\\Desktop\\数据挖掘\\codeforge');
-  const [skillsPath, setSkillsPath] = useState(localStorage.getItem('skillsPath') || '~/.codeforge/skills');
-  const [shellConfirm, setShellConfirm] = useState(localStorage.getItem('shellConfirm') || 'agent');
-  const [tokenBudget, setTokenBudget] = useState(localStorage.getItem('tokenBudget') || '10000000');
+  const { theme, setTheme, locale, setLocale, t } = useAppPreferences();
+  const [projectPath, setProjectPath] = useState('');
+  const [skillsPath, setSkillsPath] = useState('~/.codeforge/skills');
+  const [shellConfirm, setShellConfirm] = useState('agent');
+  const [tokenBudget, setTokenBudget] = useState('10000000');
+  const [contextWindowOverridesText, setContextWindowOverridesText] = useState('{}');
   const [saved, setSaved] = useState(false);
 
+  const loadSettings = useCallback(async () => {
+    let loadedSkillsPath = '~/.skills';
+    try {
+      const data = await settingsGet();
+      setTheme(data.theme === 'light' || data.theme === 'auto' ? data.theme : 'dark');
+      setLocale(data.language === 'zh-TW' || data.language === 'en-US' ? (data.language === 'en-US' ? 'en' : 'zh-TW') : 'zh-CN');
+      setProjectPath(data.projectPath || '');
+      loadedSkillsPath = data.skillsPath || loadedSkillsPath;
+      setContextWindowOverridesText(JSON.stringify(data.contextWindowOverrides || {}, null, 2));
+    } catch {
+      setTheme('dark');
+      setLocale('zh-CN');
+      setProjectPath('');
+      setContextWindowOverridesText('{}');
+    }
+
+    setSkillsPath(localStorage.getItem('skillsPath') || loadedSkillsPath);
+    setShellConfirm(localStorage.getItem('shellConfirm') || 'agent');
+    setTokenBudget(localStorage.getItem('tokenBudget') || '10000000');
+  }, [setLocale, setTheme]);
+
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
+
   const handleSave = () => {
-    localStorage.setItem('theme', theme);
-    localStorage.setItem('lang', lang);
-    localStorage.setItem('projectPath', projectPath);
-    localStorage.setItem('skillsPath', skillsPath);
-    localStorage.setItem('shellConfirm', shellConfirm);
-    localStorage.setItem('tokenBudget', tokenBudget);
-    
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    void (async () => {
+      let contextWindowOverrides: Record<string, number> = {};
+      try {
+        const parsed = JSON.parse(contextWindowOverridesText) as Record<string, unknown>;
+        contextWindowOverrides = Object.fromEntries(
+          Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
+        );
+      } catch {
+        return;
+      }
+
+      try {
+        await settingsUpdate({
+          theme,
+          language: locale === 'en' ? 'en-US' : locale,
+          projectPath: projectPath.trim() ? projectPath : null,
+          contextWindowOverrides,
+        });
+      } catch {
+      }
+
+      localStorage.setItem('skillsPath', skillsPath);
+      localStorage.setItem('shellConfirm', shellConfirm);
+      localStorage.setItem('tokenBudget', tokenBudget);
+
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    })();
   };
 
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><Settings2 size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 设置</h1>
-        <p>全局配置、主题、语言、项目路径</p>
+        <h1><Settings2 size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.settings')}</h1>
+        <p>{t('page.settings.desc')}</p>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -36,18 +83,19 @@ export default function SettingsPage() {
             <Moon size={18} /> 外观
           </h3>
           <div className="settings-row">
-            <label>主题</label>
-            <select value={theme} onChange={e => setTheme(e.target.value)}>
-              <option value="dark">深色</option>
-              <option value="light">浅色</option>
-              <option value="auto">跟随系统</option>
+            <label>{t('settings.theme')}</label>
+            <select value={theme} onChange={e => setTheme(normalizeTheme(e.target.value))}>
+              <option value="dark">{t('settings.theme.dark')}</option>
+              <option value="light">{t('settings.theme.light')}</option>
+              <option value="auto">{t('settings.theme.auto')}</option>
             </select>
           </div>
           <div className="settings-row">
-            <label>语言</label>
-            <select value={lang} onChange={e => setLang(e.target.value)}>
-              <option value="zh">简体中文</option>
-              <option value="en">English</option>
+            <label>{t('settings.language')}</label>
+            <select value={locale} onChange={e => setLocale(e.target.value === 'zh-TW' || e.target.value === 'en' ? e.target.value : 'zh-CN')}>
+              <option value="zh-CN">{t('settings.language.zh-CN')}</option>
+              <option value="zh-TW">{t('settings.language.zh-TW')}</option>
+              <option value="en">{t('settings.language.en')}</option>
             </select>
           </div>
         </div>
@@ -82,6 +130,15 @@ export default function SettingsPage() {
           <div className="settings-row">
             <label>Token 预算 (每次会话)</label>
             <input type="number" value={tokenBudget} onChange={e => setTokenBudget(e.target.value)} style={{ width: 180 }} />
+          </div>
+          <div className="settings-row" style={{ alignItems: 'flex-start' }}>
+            <label>上下文窗口覆盖</label>
+            <textarea
+              value={contextWindowOverridesText}
+              onChange={e => setContextWindowOverridesText(e.target.value)}
+              style={{ flex: 1, minHeight: 120, fontFamily: 'var(--font-mono)' }}
+              placeholder={'{\n  "gpt-5.4-mini": 400000,\n  "openaicompatible/gpt-5.4": 1000000\n}'}
+            />
           </div>
         </div>
 

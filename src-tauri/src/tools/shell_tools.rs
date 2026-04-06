@@ -42,10 +42,11 @@ pub fn run_shell(
     }
 
     let workspace = sandbox.prepare_workspace(workdir)?;
+    let sandboxed_workdir = resolve_sandboxed_workdir(&workspace.path, workdir)?;
     let start = Instant::now();
     let mut child = Command::new("cmd")
         .args(["/C", command])
-        .current_dir(&workspace.path)
+        .current_dir(&sandboxed_workdir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -78,6 +79,17 @@ pub fn run_shell(
 
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn resolve_sandboxed_workdir(
+    workspace_root: &Path,
+    _source_workdir: &Path,
+) -> AppResult<std::path::PathBuf> {
+    if !workspace_root.exists() {
+        std::fs::create_dir_all(workspace_root)?;
+    }
+
+    Ok(workspace_root.to_path_buf())
 }
 
 #[cfg(test)]

@@ -15,6 +15,10 @@ default-run = "codeforge"
 name = "codeforge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+ipc-tests = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -27,9 +31,10 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 regex = "1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
+dotenvy = "0.15"

@@ -25,6 +25,10 @@ struct SkillFrontmatter {
 }
 
 pub fn load_skill(path: &Path) -> AppResult<SkillRecord> {
+    load_skill_with_default(path, true)
+}
+
+pub fn load_skill_with_default(path: &Path, default_enabled: bool) -> AppResult<SkillRecord> {
     let text = std::fs::read_to_string(path)?;
     let (frontmatter, instructions) = split_frontmatter(&text)?;
     if frontmatter.name.trim().is_empty() {
@@ -42,7 +46,7 @@ pub fn load_skill(path: &Path) -> AppResult<SkillRecord> {
         instructions: instructions.trim().to_string(),
         tools: frontmatter.tools,
         mcp_servers: frontmatter.mcp_servers,
-        enabled: true,
+        enabled: default_enabled,
     })
 }
 

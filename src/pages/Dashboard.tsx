@@ -1,23 +1,34 @@
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageSquare, Bot, Wrench, Zap, BookOpen, Activity,
   ArrowUpRight, Clock, TrendingUp, Flame
 } from 'lucide-react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { agentList, toolList, skillList, knowledgeRepos, logList, TraceLog } from '../lib/backend';
 import './Dashboard.css';
 
-const stats = [
-  { label: '活跃 Agent', value: '5', icon: Bot, color: 'blue', trend: '+2' },
-  { label: '工具调用', value: '1,247', icon: Wrench, color: 'purple', trend: '+89' },
-  { label: '技能数', value: '12', icon: Zap, color: 'green', trend: '+3' },
-  { label: '知识库文档', value: '356', icon: BookOpen, color: 'orange', trend: '+24' },
-];
+interface StatItem {
+  label: string;
+  value: string;
+  icon: typeof Bot;
+  color: 'blue' | 'purple' | 'green' | 'orange';
+  trend: string;
+  path: string;
+}
 
-const recentActivities = [
-  { agent: 'Reviewer', action: '审查了 src/main.rs', time: '2 分钟前', status: 'success' },
-  { agent: 'Refactorer', action: '重构建议: extract_function()', time: '5 分钟前', status: 'success' },
-  { agent: 'Researcher', action: '搜索最佳实践: Error Handling', time: '8 分钟前', status: 'pending' },
-  { agent: 'Orchestrator', action: '编排代码审查任务', time: '12 分钟前', status: 'success' },
-  { agent: 'Executor', action: '运行 cargo test', time: '15 分钟前', status: 'error' },
+interface ActivityItem {
+  agent: string;
+  action: string;
+  time: string;
+  status: 'success' | 'pending' | 'error';
+}
+
+const defaultStats: StatItem[] = [
+  { label: '活跃 Agent', value: '0', icon: Bot, color: 'blue', trend: '+0', path: '/agents' },
+  { label: '工具调用', value: '0', icon: Wrench, color: 'purple', trend: '+0', path: '/logs' },
+  { label: '技能数', value: '0', icon: Zap, color: 'green', trend: '+0', path: '/skills' },
+  { label: '知识库文档', value: '0', icon: BookOpen, color: 'orange', trend: '+0', path: '/knowledge' },
 ];
 
 const quickActions = [
@@ -35,8 +46,93 @@ const archRoutes: Record<string, string> = {
   Harness: '/review',
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const readString = (value: Record<string, unknown>, key: string): string => {
+  const target = value[key];
+  return typeof target === 'string' ? target : '';
+};
+
+const toRelativeTime = (timeText: string): string => {
+  const date = new Date(timeText);
+  if (Number.isNaN(date.getTime())) {
+    return '刚刚';
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+  if (diffMinutes < 1) {
+    return '刚刚';
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes} 分钟前`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours} 小时前`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} 天前`;
+};
+
+const toActivity = (log: TraceLog): ActivityItem => {
+  const payload = isRecord(log.payload) ? log.payload : {};
+  const action = readString(payload, 'action') || readString(payload, 'name') || readString(payload, 'content') || log.kind;
+  const agent = readString(payload, 'agent') || log.kind;
+  const statusValue = readString(payload, 'status').toLowerCase();
+  const status: ActivityItem['status'] =
+    statusValue === 'error' || log.kind.includes('error')
+      ? 'error'
+      : statusValue === 'pending'
+        ? 'pending'
+        : 'success';
+
+  return {
+    agent,
+    action,
+    time: toRelativeTime(log.createdAt),
+    status,
+  };
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { t } = useAppPreferences();
+  const [stats, setStats] = useState<StatItem[]>(defaultStats);
+  const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
+
+  const loadDashboard = useCallback(async () => {
+    const [agents, tools, skills, repos, logs] = await Promise.all([
+      agentList().catch(() => []),
+      toolList().catch(() => []),
+      skillList().catch(() => []),
+      knowledgeRepos().catch(() => []),
+      logList(12).catch(() => []),
+    ]);
+
+    const activeAgents = agents.filter((item) => item.status === 'running').length;
+    const toolCalls = logs.filter((item) => item.kind === 'tool').length;
+    const skillCount = skills.length;
+    const knowledgeChunks = repos.reduce((sum, item) => sum + item.chunkCount, 0);
+
+    setStats([
+      { label: '活跃 Agent', value: activeAgents.toString(), icon: Bot, color: 'blue', trend: '+0', path: '/agents' },
+      { label: '工具调用', value: toolCalls.toLocaleString('zh-CN'), icon: Wrench, color: 'purple', trend: `+${tools.length}`, path: '/logs' },
+      { label: '技能数', value: skillCount.toString(), icon: Zap, color: 'green', trend: '+0', path: '/skills' },
+      { label: '知识库文档', value: knowledgeChunks.toLocaleString('zh-CN'), icon: BookOpen, color: 'orange', trend: '+0', path: '/knowledge' },
+    ]);
+
+    setRecentActivities(logs.slice(0, 5).map(toActivity));
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
   return (
     <div className="dashboard animate-in">
       <div className="page-header">
@@ -44,16 +140,29 @@ export default function Dashboard() {
           <div>
             <h1>
               <Flame size={28} style={{ verticalAlign: 'middle', marginRight: 10 }} />
-              欢迎使用 CodeForge
+              {t('route.dashboard')}
             </h1>
-            <p>基于多Agent协作的代码智能分析与最佳实践挖掘平台</p>
+            <p>{t('page.dashboard.desc')}</p>
           </div>
         </div>
       </div>
 
-      <div className="stats-grid">
-        {stats.map((stat) => (
-          <div key={stat.label} className={`stat-card card card-glow stat-${stat.color}`}>
+        <div className="stats-grid">
+          {stats.map((stat) => (
+          <div
+            key={stat.label}
+            className={`stat-card card card-glow stat-${stat.color}`}
+            style={{ cursor: 'pointer' }}
+            role="button"
+            tabIndex={0}
+            onClick={() => navigate(stat.path)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                navigate(stat.path);
+              }
+            }}
+          >
             <div className="stat-card-header">
               <div className={`stat-icon stat-icon-${stat.color}`}>
                 <stat.icon size={20} />
@@ -77,9 +186,9 @@ export default function Dashboard() {
           </h3>
           <div className="activity-list">
             {recentActivities.map((a, i) => (
-              <div 
-                key={i} 
-                className="activity-item" 
+              <div
+                key={`${a.agent}-${a.time}-${i}`}
+                className="activity-item"
                 style={{ animationDelay: `${i * 0.05}s`, cursor: 'pointer' }}
                 onClick={() => navigate('/logs')}
               >

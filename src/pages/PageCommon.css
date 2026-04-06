@@ -13,7 +13,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
 .agent-card-header {
@@ -24,11 +24,12 @@
 }
 
 .agent-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--accent-blue-light);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -36,7 +37,8 @@
 
 .agent-card-header h4 {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 .agent-card-header span:last-child {
@@ -67,15 +69,16 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .tool-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--accent-blue-light);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -85,18 +88,19 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .skill-card-header h4 {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 .issue-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .issue-item {
@@ -104,15 +108,15 @@
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
   cursor: pointer;
-  animation: fadeIn 0.3s ease forwards;
-  opacity: 0;
+  border: 1px solid transparent;
 }
 
 .issue-item:hover {
   background: var(--bg-tertiary);
+  border-color: var(--border-primary);
 }
 
 .issue-icon {
@@ -129,6 +133,7 @@
 .issue-message {
   font-size: 13px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .issue-location {
@@ -139,6 +144,12 @@
 
 .issue-arrow {
   color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+}
+
+.issue-item:hover .issue-arrow {
+  transform: translateX(4px);
+  color: var(--text-primary);
 }
 
 .data-table {
@@ -149,7 +160,7 @@
 .data-table th {
   text-align: left;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -179,6 +190,11 @@
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
   padding: 0 12px;
+  transition: border-color var(--transition-fast);
+}
+
+.search-box:focus-within {
+  border-color: var(--border-secondary);
 }
 
 .search-box input {
@@ -187,6 +203,13 @@
   padding: 8px 0;
   font-size: 14px;
   width: 280px;
+  outline: none;
+  box-shadow: none;
+}
+
+.search-box input:focus {
+  background: none;
+  box-shadow: none;
 }
 
 .search-box svg {
@@ -197,7 +220,7 @@
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 12px 0;
+  padding: 16px 0;
   border-bottom: 1px solid var(--border-primary);
 }
 

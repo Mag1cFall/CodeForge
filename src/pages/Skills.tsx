@@ -1,39 +1,56 @@
 import { Zap, ToggleLeft, ToggleRight, Plus, ChevronDown, ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useAppPreferences } from '../lib/app-preferences';
+import { skillList as fetchSkillList, skillToggle, SkillRecord } from '../lib/backend';
 import './PageCommon.css';
 
-const skills = [
-  { name: 'code-review', title: '代码审查', desc: '全面的代码质量审查，包括复杂度、命名、错误处理', enabled: true, builtin: true },
-  { name: 'best-practices', title: '最佳实践', desc: '语言特定的最佳实践推荐和模式匹配', enabled: true, builtin: true },
-  { name: 'security-audit', title: '安全审计', desc: 'OWASP Top 10 安全漏洞检测', enabled: false, builtin: true },
-  { name: 'refactoring', title: '代码重构', desc: '智能重构建议，支持提取函数/类/模块', enabled: true, builtin: true },
-  { name: 'documentation', title: '文档生成', desc: '自动生成 API 文档和代码注释', enabled: false, builtin: true },
-  { name: 'git-master', title: 'Git 大师', desc: '原子化提交、变基手术、冲突解决', enabled: true, builtin: false },
-];
-
 export default function Skills() {
-  const [skillList, setSkillList] = useState(skills);
+  const { t } = useAppPreferences();
+  const [skillList, setSkillList] = useState<SkillRecord[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', path: '' });
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
-  const toggle = (i: number) => {
-    setSkillList(prev => prev.map((s, idx) => idx === i ? { ...s, enabled: !s.enabled } : s));
+  const loadSkills = useCallback(async () => {
+    try {
+      const data = await fetchSkillList();
+      setSkillList(data ?? []);
+    } catch {
+      setSkillList([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
+
+  const toggle = async (name: string, enabled: boolean) => {
+    const nextEnabled = !enabled;
+    setSkillList((prev) => prev.map((s) => (s.name === name ? { ...s, enabled: nextEnabled } : s)));
+    try {
+      await skillToggle(name, nextEnabled);
+    } catch {
+      await loadSkills();
+    }
   };
 
   const handleInstall = () => {
     if (form.name && form.path) {
-      setSkillList([...skillList, { name: form.name.toLowerCase().replace(/\s+/g, '-'), title: form.name, desc: `引用于 ${form.path}`, enabled: true, builtin: false }]);
       setShowForm(false);
       setForm({ name: '', path: '' });
+      void loadSkills();
     }
+  };
+
+  const isBuiltinSkill = (path: string) => {
+    return path.includes('builtin-skills') || path.includes('\\.system\\') || path.includes('/.system/');
   };
 
   return (
     <div className="animate-in">
       <div className="page-header">
-        <h1><Zap size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> 技能市场</h1>
-        <p>Skill = Prompt + Tools + MCP — 赋予 Agent 专业领域能力</p>
+        <h1><Zap size={28} style={{ verticalAlign: 'middle', marginRight: 8 }} /> {t('route.skills')}</h1>
+        <p>{t('page.skills.desc')}</p>
       </div>
 
       <div className="page-toolbar">
@@ -63,32 +80,32 @@ export default function Skills() {
       )}
 
       <div className="card-grid">
-        {skillList.map((skill, i) => (
-          <div key={skill.name} className="card card-glow skill-card" onClick={() => setExpanded(expanded === i ? null : i)} style={{ cursor: 'pointer' }}>
+        {skillList.map((skill) => (
+          <div key={skill.name} className="card card-glow skill-card" onClick={() => setExpanded(expanded === skill.name ? null : skill.name)} style={{ cursor: 'pointer' }}>
             <div className="skill-card-header">
               <h4 style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                {expanded === i ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                {skill.title}
+                {expanded === skill.name ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                {skill.name}
               </h4>
-              <button className="btn btn-ghost btn-icon" onClick={(e) => { e.stopPropagation(); toggle(i); }}>
+              <button className="btn btn-ghost btn-icon" onClick={(e) => { e.stopPropagation(); void toggle(skill.name, skill.enabled); }}>
                 {skill.enabled 
                   ? <ToggleRight size={24} color="var(--accent-green)" />
                   : <ToggleLeft size={24} color="var(--text-tertiary)" />
                 }
               </button>
             </div>
-            <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>{skill.desc}</p>
+            <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>{skill.description || '暂无描述'}</p>
             <div style={{ display: 'flex', gap: 8 }}>
-              {skill.builtin 
+              {isBuiltinSkill(skill.path)
                 ? <span className="badge badge-blue">内置</span>
                 : <span className="badge badge-purple">社区</span>
               }
               <span className={`badge badge-${skill.enabled ? 'green' : 'secondary'}`}>{skill.enabled ? '已启用' : '未启用'}</span>
             </div>
-            {expanded === i && (
+            {expanded === skill.name && (
               <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-main)', borderRadius: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
                 <strong>Instructions 预览：</strong><br />
-                {`# ${skill.title}\n${skill.desc}\n\n## 规则\n1. 遵守最佳实践\n2. 优化性能\n3. 编写注释`}
+                {skill.instructions || '暂无 Instructions'}
               </div>
             )}
           </div>
