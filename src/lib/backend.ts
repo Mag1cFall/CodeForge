@@ -150,6 +150,12 @@ export interface EmbeddingConfig {
   apiKey?: string | null;
 }
 
+export interface SessionRunConfig {
+  providerId?: string | null;
+  model?: string | null;
+  stream?: boolean;
+}
+
 export interface ProjectInfo {
   path: string;
   fileCount: number;
@@ -161,6 +167,16 @@ export interface ChatChunkEvent {
   delta: string;
   done: boolean;
   toolResults: Array<Record<string, unknown>>;
+}
+
+export interface ChatProgressEvent {
+  sessionId: string;
+  message: string;
+}
+
+export interface ChatToolResultEvent {
+  sessionId: string;
+  tool: Record<string, unknown>;
 }
 
 export interface PermissionRequestPayload {
@@ -185,6 +201,11 @@ export interface ReviewIssue {
   suggestion: string;
 }
 
+export interface ToolUsageCount {
+  name: string;
+  calls: number;
+}
+
 export const agentList = () => invoke<AgentRecord[]>('agent_list');
 export const agentCreate = (config: AgentConfigInput) => invoke<AgentRecord>('agent_create', { config });
 export const agentStart = (id: string) => invoke<void>('agent_start', { id });
@@ -192,7 +213,10 @@ export const agentStop = (id: string) => invoke<void>('agent_stop', { id });
 
 export const providerList = () => invoke<ProviderSummary[]>('provider_list');
 export const providerCreate = (config: ProviderConfigInput) => invoke<ProviderSummary>('provider_create', { config });
+export const providerUpdate = (id: string, config: ProviderConfigInput) => invoke<ProviderSummary>('provider_update', { id, config });
 export const providerDelete = (id: string) => invoke<void>('provider_delete', { id });
+export const providerFetchModels = (providerType: ProviderType, endpoint: string, apiKey?: string | null, headers?: Record<string, string>) =>
+  invoke<string[]>('provider_fetch_models', { providerType, endpoint, apiKey, headers });
 
 export const sessionList = () => invoke<SessionRecord[]>('session_list');
 export const sessionCreate = (agentId: string) => invoke<SessionRecord>('session_create', { agentId });
@@ -200,12 +224,14 @@ export const sessionDelete = (id: string) => invoke<void>('session_delete', { id
 export const sessionMessages = (id: string) => invoke<SessionMessage[]>('session_messages', { id });
 export const sessionRewriteMessage = (sessionId: string, messageId: string, content: string) => invoke<void>('session_rewrite_message', { sessionId, messageId, content });
 
-export const chatSend = (sessionId: string, message: string) => invoke<void>('chat_send', { sessionId, message });
+export const chatSend = (sessionId: string, message: string, config?: SessionRunConfig) => invoke<void>('chat_send', { sessionId, message, config });
 export const chatRetry = (sessionId: string, messageId?: string | null) => invoke<void>('chat_retry', { sessionId, messageId });
 export const permissionRespond = (requestId: string, approved: boolean) => invoke<void>('permission_respond', { requestId, approved });
+export const permissionPending = (sessionId: string) => invoke<PermissionRequestPayload | null>('permission_pending', { sessionId });
 
 export const toolList = () => invoke<ToolSchema[]>('tool_list');
 export const toolExecute = (name: string, args: Record<string, unknown>) => invoke<string>('tool_execute', { name, args });
+export const toolUsageCounts = () => invoke<ToolUsageCount[]>('tool_usage_counts');
 
 export const mcpServerList = () => invoke<McpServerRecord[]>('mcp_server_list');
 export const mcpServerAdd = (config: McpServerConfigInput) => invoke<McpServerRecord>('mcp_server_add', { config });
@@ -231,6 +257,16 @@ export const projectReview = (path: string, sandbox: boolean) => invoke<void>('p
 
 export const listenChatChunk = (handler: (payload: ChatChunkEvent) => void): Promise<UnlistenFn> =>
   listen<ChatChunkEvent>('chat_chunk', (event) => {
+    handler(event.payload);
+  });
+
+export const listenChatProgress = (handler: (payload: ChatProgressEvent) => void): Promise<UnlistenFn> =>
+  listen<ChatProgressEvent>('chat_progress', (event) => {
+    handler(event.payload);
+  });
+
+export const listenChatToolResult = (handler: (payload: ChatToolResultEvent) => void): Promise<UnlistenFn> =>
+  listen<ChatToolResultEvent>('chat_tool_result', (event) => {
     handler(event.payload);
   });
 

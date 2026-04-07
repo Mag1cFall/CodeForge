@@ -7,6 +7,7 @@ use crate::db::sqlite::Database;
 use crate::error::{AppError, AppResult};
 
 use super::indexer::IndexedChunk;
+use super::knowledge_log;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +46,14 @@ impl KnowledgeStore {
         status: &str,
         chunk_count: usize,
     ) -> AppResult<KnowledgeRepo> {
+        knowledge_log(
+            "store.repo.upsert.start",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "status": status,
+                "chunkCount": chunk_count,
+            }),
+        );
         let existing = self.get_repo_by_path(path)?;
         let repo_id = existing
             .as_ref()
@@ -71,8 +80,19 @@ impl KnowledgeStore {
             ],
         )?;
 
-        self.get_repo_by_id(&repo_id)?
-            .ok_or_else(|| AppError::new("未能读取知识库索引记录"))
+        let repo = self
+            .get_repo_by_id(&repo_id)?
+            .ok_or_else(|| AppError::new("未能读取知识库索引记录"))?;
+        knowledge_log(
+            "store.repo.upsert.complete",
+            serde_json::json!({
+                "repoId": repo.id,
+                "path": repo.path,
+                "status": repo.status,
+                "chunkCount": repo.chunk_count,
+            }),
+        );
+        Ok(repo)
     }
 
     pub fn replace_chunks(
@@ -80,6 +100,13 @@ impl KnowledgeStore {
         repo_id: &str,
         chunks: Vec<(IndexedChunk, Vec<f32>)>,
     ) -> AppResult<()> {
+        knowledge_log(
+            "store.chunks.replace.start",
+            serde_json::json!({
+                "repoId": repo_id,
+                "chunkCount": chunks.len(),
+            }),
+        );
         let mut connection = self.db.connection()?;
         let tx = connection.transaction()?;
         tx.execute(
@@ -87,6 +114,9 @@ impl KnowledgeStore {
             params![repo_id],
         )?;
         for (chunk, vector) in chunks {
+            if vector.iter().any(|value| !value.is_finite()) {
+                return Err(AppError::new("embedding 向量存在无效数值"));
+            }
             tx.execute(
                 r#"
                 INSERT INTO knowledge_chunks (id, repo_id, file_path, content, token_count, vector_json)
@@ -103,6 +133,10 @@ impl KnowledgeStore {
             )?;
         }
         tx.commit()?;
+        knowledge_log(
+            "store.chunks.replace.complete",
+            serde_json::json!({ "repoId": repo_id }),
+        );
         Ok(())
     }
 
@@ -133,13 +167,43 @@ impl KnowledgeStore {
             "SELECT id, repo_id, file_path, content, token_count, vector_json FROM knowledge_chunks WHERE repo_id = ?1",
         )?;
         let rows = statement.query_map(params![repo_id], |row| {
+            let vector_json = row.get::<_, String>(5)?;
             Ok(KnowledgeChunkRecord {
                 id: row.get(0)?,
                 repo_id: row.get(1)?,
                 file_path: row.get(2)?,
                 content: row.get(3)?,
                 token_count: row.get::<_, i64>(4)? as usize,
-                vector: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+                vector: parse_vector_json(&vector_json),
+            })
+        })?;
+
+        let mut chunks = Vec::new();
+        for row in rows {
+            chunks.push(row?);
+        }
+        Ok(chunks)
+    }
+
+    pub fn list_all_chunks(&self) -> AppResult<Vec<KnowledgeChunkRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT c.id, c.repo_id, c.file_path, c.content, c.token_count, c.vector_json
+            FROM knowledge_chunks c
+            INNER JOIN knowledge_repos r ON c.repo_id = r.id
+            WHERE r.status = 'ready'
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            let vector_json = row.get::<_, String>(5)?;
+            Ok(KnowledgeChunkRecord {
+                id: row.get(0)?,
+                repo_id: row.get(1)?,
+                file_path: row.get(2)?,
+                content: row.get(3)?,
+                token_count: row.get::<_, i64>(4)? as usize,
+                vector: parse_vector_json(&vector_json),
             })
         })?;
 
@@ -186,5 +250,24 @@ impl KnowledgeStore {
             })
             .optional()?;
         Ok(repo)
+    }
+}
+
+fn parse_vector_json(raw: &str) -> Vec<f32> {
+    match serde_json::from_str::<Vec<f32>>(raw) {
+        Ok(vector) => vector
+            .into_iter()
+            .map(|value| if value.is_finite() { value } else { 0.0 })
+            .collect(),
+        Err(error) => {
+            knowledge_log(
+                "store.vector.parse_failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                    "rawLength": raw.len(),
+                }),
+            );
+            Vec::new()
+        }
     }
 }

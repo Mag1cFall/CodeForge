@@ -16,10 +16,15 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_app<R: Runtime>(app: &AppHandle<R>) -> AppResult<Self> {
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| AppError::new(error.to_string()))?;
+        let data_dir = std::env::var("CODEFORGE_DATA_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|error| AppError::new(error.to_string()))?,
+            );
 
         let skills_dir = resolve_skills_dir(&data_dir);
         let builtin_skills_dir = data_dir.join("builtin-skills");

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:desktop-ui": "npm run tauri build -- --debug --no-bundle && npm --prefix e2e test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

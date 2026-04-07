@@ -11,11 +11,12 @@ export interface PermissionRequest {
 
 interface Props {
   request: PermissionRequest | null;
+  processing: boolean;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
 }
 
-export default function PermissionDialog({ request, onApprove, onDeny }: Props) {
+export default function PermissionDialog({ request, processing, onApprove, onDeny }: Props) {
   if (!request) return null;
 
   const riskColors = {
@@ -49,11 +50,11 @@ export default function PermissionDialog({ request, onApprove, onDeny }: Props) 
         </div>
 
         <div className="perm-actions">
-          <button type="button" className="btn btn-danger" onClick={() => onDeny(request.id)}>
-            <X size={16} /> 拒绝
+          <button type="button" className="btn btn-danger" onClick={() => onDeny(request.id)} disabled={processing}>
+            <X size={16} /> {processing ? '处理中...' : '拒绝'}
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => onApprove(request.id)}>
-            <Check size={16} /> 允许执行
+          <button type="button" className="btn btn-primary" onClick={() => onApprove(request.id)} disabled={processing}>
+            <Check size={16} /> {processing ? '处理中...' : '允许执行'}
           </button>
         </div>
       </div>

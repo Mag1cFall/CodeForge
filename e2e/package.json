@@ -1,0 +1,12 @@
+{
+  "name": "codeforge-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node ./run-desktop-smoke.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "selenium-webdriver": "^4.37.0"
+  }
+}

@@ -1,13 +1,22 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
+use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::agent::runner::AgentRuntime;
+use crate::agent::runner::{AgentRunConfig, AgentRuntime};
 use crate::harness::permission::PermissionRequest;
 use crate::commands::settings::{get_settings, AppSettings};
 use crate::session::message_mutations::delete_after_message;
 use crate::skill::manager::SkillSyncSource;
 use crate::state::{AppState, PendingPermissionContext};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRunConfig {
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+}
 
 #[tauri::command]
 pub async fn chat_send<R: tauri::Runtime>(
@@ -15,20 +24,9 @@ pub async fn chat_send<R: tauri::Runtime>(
     state: State<'_, AppState>,
     session_id: String,
     message: String,
+    config: Option<SessionRunConfig>,
 ) -> Result<(), String> {
-    state
-        .skills
-        .sync_from_dirs(&[
-            SkillSyncSource {
-                root: &state.config.builtin_skills_dir,
-                default_enabled: true,
-            },
-            SkillSyncSource {
-                root: &state.config.skills_dir,
-                default_enabled: false,
-            },
-        ])
-        .map_err(|error| error.message.clone())?;
+    ensure_skills_ready(state.inner())?;
 
     let session = state
         .sessions
@@ -43,6 +41,24 @@ pub async fn chat_send<R: tauri::Runtime>(
 
     let workspace_root = load_workspace_root(&state)?;
     let settings = get_settings(&state).map_err(|error| error.message.clone())?;
+    let runtime_config = config.unwrap_or_default();
+    save_session_run_config(state.inner(), &session_id, &runtime_config)?;
+
+    let existing_message_count = state
+        .sessions
+        .messages(&session_id)
+        .map_err(|error| error.message.clone())?
+        .len();
+    if existing_message_count == 0 {
+        let _ = state.sessions.maybe_auto_rename(&session_id, &message);
+    }
+
+    let session = state
+        .sessions
+        .get(&session_id)
+        .map_err(|error| error.message.clone())?
+        .ok_or_else(|| "会话不存在".to_string())?;
+
     let runtime = AgentRuntime {
         agent_store: state.agents.clone(),
         provider_store: state.providers.clone(),
@@ -62,6 +78,7 @@ pub async fn chat_send<R: tauri::Runtime>(
             message,
             state.skills.active_instructions().map_err(|error| error.message.clone())?,
             workspace_root,
+            to_agent_run_config(&runtime_config),
         )
         .await
         .map_err(|error| error.message)?;
@@ -82,16 +99,7 @@ pub async fn chat_send<R: tauri::Runtime>(
         )
         .map_err(|error| error.message.clone())?;
 
-    app.emit(
-        "chat_chunk",
-        serde_json::json!({
-            "sessionId": session_id,
-            "delta": result.content,
-            "done": true,
-            "toolResults": result.tool_results,
-        }),
-    )
-    .map_err(|error| error.to_string())?;
+    emit_chat_stream(&app, &session_id, &result.content, &result.tool_results).await?;
 
     Ok(())
 }
@@ -103,19 +111,7 @@ pub async fn chat_retry<R: tauri::Runtime>(
     session_id: String,
     message_id: Option<String>,
 ) -> Result<(), String> {
-    state
-        .skills
-        .sync_from_dirs(&[
-            SkillSyncSource {
-                root: &state.config.builtin_skills_dir,
-                default_enabled: true,
-            },
-            SkillSyncSource {
-                root: &state.config.skills_dir,
-                default_enabled: false,
-            },
-        ])
-        .map_err(|error| error.message.clone())?;
+    ensure_skills_ready(state.inner())?;
 
     let session = state
         .sessions
@@ -148,6 +144,7 @@ pub async fn chat_retry<R: tauri::Runtime>(
 
     let workspace_root = load_workspace_root(&state)?;
     let settings = get_settings(&state).map_err(|error| error.message.clone())?;
+    let runtime_config = load_session_run_config(state.inner(), &session_id)?;
     let runtime = AgentRuntime {
         agent_store: state.agents.clone(),
         provider_store: state.providers.clone(),
@@ -171,6 +168,7 @@ pub async fn chat_retry<R: tauri::Runtime>(
             &refreshed_session,
             state.skills.active_instructions().map_err(|error| error.message.clone())?,
             workspace_root,
+            to_agent_run_config(&runtime_config),
         )
         .await
         .map_err(|error| error.message)?;
@@ -192,16 +190,7 @@ pub async fn chat_retry<R: tauri::Runtime>(
         )
         .map_err(|error| error.message.clone())?;
 
-    app.emit(
-        "chat_chunk",
-        serde_json::json!({
-            "sessionId": session_id,
-            "delta": result.content,
-            "done": true,
-            "toolResults": result.tool_results,
-        }),
-    )
-    .map_err(|error| error.to_string())?;
+    emit_chat_stream(&app, &session_id, &result.content, &result.tool_results).await?;
 
     Ok(())
 }
@@ -214,6 +203,20 @@ pub async fn permission_respond<R: tauri::Runtime>(
     approved: bool,
 ) -> Result<(), String> {
     let connection = state.db.connection().map_err(|error| error.message.clone())?;
+    let status = connection
+        .query_row(
+            "SELECT status FROM permission_requests WHERE id = ?1 LIMIT 1",
+            rusqlite::params![request_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+
+    let status = status.ok_or_else(|| "权限请求不存在或已过期".to_string())?;
+    if status != "pending" {
+        return Err("权限请求已处理，请勿重复提交".to_string());
+    }
+
     connection
         .execute(
             "UPDATE permission_requests SET status = ?2, updated_at = ?3 WHERE id = ?1",
@@ -242,11 +245,38 @@ pub async fn permission_respond<R: tauri::Runtime>(
         if approved {
             continue_permission_request(&app, &state, pending).await?;
         } else {
-            reject_permission_request(&app, &state, pending)?;
+            reject_permission_request(&app, &state, pending).await?;
         }
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn permission_pending(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<PermissionRequest>, String> {
+    let pending = state
+        .pending_permissions
+        .lock()
+        .map_err(|_| "待处理权限状态被锁定".to_string())?
+        .values()
+        .find(|entry| entry.session_id == session_id)
+        .cloned();
+
+    let Some(pending) = pending else {
+        return Ok(None);
+    };
+
+    let (_, risk_level, description) = state.permission.classify(&pending.tool_name);
+    Ok(Some(PermissionRequest {
+        id: pending.request_id,
+        tool_name: pending.tool_name,
+        args: pending.args,
+        risk_level,
+        description,
+    }))
 }
 
 async fn continue_permission_request<R: tauri::Runtime>(
@@ -269,8 +299,14 @@ async fn continue_permission_request<R: tauri::Runtime>(
     let tool_payload = serde_json::json!({
         "id": pending.request_id,
         "name": pending.tool_name,
+        "args": pending.args,
         "result": tool_output,
     });
+    app.emit(
+        "chat_tool_result",
+        serde_json::json!({ "sessionId": pending.session_id, "tool": tool_payload }),
+    )
+    .map_err(|error| error.to_string())?;
     let summary = format!("Tool result:\n{}", tool_payload["result"].as_str().unwrap_or_default());
     state
         .sessions
@@ -288,6 +324,17 @@ async fn continue_permission_request<R: tauri::Runtime>(
         .map_err(|error| error.message.clone())?
         .ok_or_else(|| "会话关联的 Agent 不存在".to_string())?;
     let settings = get_settings(state).map_err(|error| error.message.clone())?;
+    let runtime_config = load_session_run_config(state, &pending.session_id)?;
+    let mut agent_run_config = to_agent_run_config(&runtime_config);
+    if !agent_run_config
+        .approved_tool_names
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(&pending.tool_name))
+    {
+        agent_run_config
+            .approved_tool_names
+            .push(pending.tool_name.clone());
+    }
     let runtime = AgentRuntime {
         agent_store: state.agents.clone(),
         provider_store: state.providers.clone(),
@@ -306,6 +353,7 @@ async fn continue_permission_request<R: tauri::Runtime>(
             &session,
             state.skills.active_instructions().map_err(|error| error.message.clone())?,
             workspace_root,
+            agent_run_config,
         )
         .await
         .map_err(|error| error.message)?;
@@ -318,21 +366,18 @@ async fn continue_permission_request<R: tauri::Runtime>(
         .chain(result.tool_results.into_iter())
         .collect::<Vec<_>>();
 
-    app.emit(
-        "chat_chunk",
-        serde_json::json!({
-            "sessionId": pending.session_id,
-            "delta": result.content,
-            "done": true,
-            "toolResults": combined_tool_results,
-        }),
+    emit_chat_stream(
+        app,
+        &pending.session_id,
+        &result.content,
+        &combined_tool_results,
     )
-    .map_err(|error| error.to_string())?;
+    .await?;
 
     Ok(())
 }
 
-fn reject_permission_request<R: tauri::Runtime>(
+async fn reject_permission_request<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     pending: PendingPermissionContext,
@@ -342,17 +387,69 @@ fn reject_permission_request<R: tauri::Runtime>(
         .sessions
         .append_message(&pending.session_id, "assistant", &content, vec![])
         .map_err(|error| error.message.clone())?;
+    emit_chat_stream(app, &pending.session_id, &content, &[]).await?;
+    Ok(())
+}
+
+async fn emit_chat_stream<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    content: &str,
+    tool_results: &[serde_json::Value],
+) -> Result<(), String> {
+    const CHUNK_SIZE: usize = 24;
+    for chunk in split_stream_chunks(content, CHUNK_SIZE) {
+        app.emit(
+            "chat_chunk",
+            serde_json::json!({
+                "sessionId": session_id,
+                "delta": chunk,
+                "done": false,
+                "toolResults": [],
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+        tokio::time::sleep(Duration::from_millis(12)).await;
+    }
+
     app.emit(
         "chat_chunk",
         serde_json::json!({
-            "sessionId": pending.session_id,
-            "delta": content,
+            "sessionId": session_id,
+            "delta": "",
             "done": true,
-            "toolResults": [],
+            "toolResults": tool_results,
         }),
     )
     .map_err(|error| error.to_string())?;
+
     Ok(())
+}
+
+fn split_stream_chunks(content: &str, chunk_size: usize) -> Vec<String> {
+    if content.is_empty() || chunk_size == 0 {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+
+    for ch in content.chars() {
+        current.push(ch);
+        current_len += 1;
+        if current_len >= chunk_size {
+            chunks.push(current);
+            current = String::new();
+            current_len = 0;
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
 }
 
 fn save_pending_permission(
@@ -413,4 +510,65 @@ fn load_workspace_root(state: &AppState) -> Result<Option<PathBuf>, String> {
     };
     let settings: AppSettings = serde_json::from_str(&value).map_err(|error| error.to_string())?;
     Ok(settings.project_path.map(PathBuf::from))
+}
+
+fn save_session_run_config(
+    state: &AppState,
+    session_id: &str,
+    config: &SessionRunConfig,
+) -> Result<(), String> {
+    state
+        .db
+        .set_json(
+            &format!("session_run_config:{session_id}"),
+            &serde_json::to_string(config).map_err(|error| error.to_string())?,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .map_err(|error| error.message)
+}
+
+fn load_session_run_config(state: &AppState, session_id: &str) -> Result<SessionRunConfig, String> {
+    let Some(value) = state
+        .db
+        .get_json(&format!("session_run_config:{session_id}"))
+        .map_err(|error| error.message.clone())?
+    else {
+        return Ok(SessionRunConfig::default());
+    };
+
+    serde_json::from_str(&value).map_err(|error| error.to_string())
+}
+
+fn to_agent_run_config(config: &SessionRunConfig) -> AgentRunConfig {
+    AgentRunConfig {
+        provider_id: config.provider_id.clone(),
+        model: config.model.clone(),
+        approved_tool_names: Vec::new(),
+    }
+}
+
+fn ensure_skills_ready(state: &AppState) -> Result<(), String> {
+    let existing = state
+        .skills
+        .list()
+        .map_err(|error| error.message.clone())?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+
+    state
+        .skills
+        .sync_from_dirs(&[
+            SkillSyncSource {
+                root: &state.config.builtin_skills_dir,
+                default_enabled: true,
+            },
+            SkillSyncSource {
+                root: &state.config.skills_dir,
+                default_enabled: false,
+            },
+        ])
+        .map_err(|error| error.message.clone())?;
+
+    Ok(())
 }

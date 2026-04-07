@@ -1,0 +1,130 @@
+TimeoutError: Waiting for element to be located By(xpath, //*[contains(normalize-space(.), 'provider_create')])
+Wait timed out after 31187ms
+
+CodeForge
+炼码 · AI CODING AGENT
+核心
+仪表盘
+对话
+代码审查
+AGENT 框架
+Agent 管理
+工具注册
+MCP 服务
+技能市场
+数据
+知识库
+模型配置
+执行日志
+系统
+设置
+收起侧栏
+CodeForge
+/
+执行日志
+执行日志
+Agent 执行 trace、工具调用日志、Token 消耗明细
+筛选
+总计消耗: 0 tokens
+ID AGENT 操作 状态 TOKENS 耗时 时间
+tr-329
+knowledge_search
+knowledge_search → Agent Loop
+成功
+0 - 2026/4/6 23:53:22
+tr-328
+knowledge_index
+knowledge_index
+成功
+0 - 2026/4/6 23:53:22
+tr-327
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-326
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-325
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-324
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-323
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-322
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-321
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-320
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-319
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-318
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-317
+agent_hook
+agent_hook
+成功
+0 - 2026/4/6 23:53:20
+tr-316
+session_update_context_max
+session_update_context_max
+成功
+0 - 2026/4/6 23:53:20
+tr-315
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-314
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-313
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-312
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-311
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+tr-310
+skill_manager
+skill_manager
+成功
+0 - 2026/4/6 23:53:20
+加载更多日志

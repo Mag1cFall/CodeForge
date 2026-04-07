@@ -1,3 +1,6 @@
+use std::collections::BTreeSet;
+use std::time::Instant;
+
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
@@ -8,6 +11,9 @@ use super::model::{
     model_context_window, ProviderConfigInput, ProviderExtra, ProviderRecord, ProviderSummary,
     ProviderType,
 };
+use super::telemetry::log_event;
+
+const MODELS_FETCH_RETRY_DELAYS_MS: [u64; 3] = [0, 300, 1000];
 
 #[derive(Debug, Clone)]
 pub struct ProviderStore {
@@ -141,36 +147,78 @@ impl ProviderStore {
         let normalized = normalize_model_key(model);
         if let Some(provider) = provider {
             if let Some(value) = provider.extra.context_windows.get(&normalized).copied() {
+                log_event(
+                    "provider_store",
+                    "context_window_hit_cache",
+                    serde_json::json!({
+                        "providerId": provider.id.as_str(),
+                        "providerType": provider.provider_type.as_str(),
+                        "model": normalized.as_str(),
+                        "contextWindow": value,
+                    }),
+                );
                 return Ok(value);
             }
 
-            if let Some(discovered) = fetch_context_window_from_provider_async(provider, model).await?
+            if let Some(discovered) =
+                fetch_context_window_from_provider_async(provider, model).await?
             {
                 self.store_context_window(provider, &normalized, discovered)?;
+                log_event(
+                    "provider_store",
+                    "context_window_discovered",
+                    serde_json::json!({
+                        "providerId": provider.id.as_str(),
+                        "providerType": provider.provider_type.as_str(),
+                        "model": normalized.as_str(),
+                        "contextWindow": discovered,
+                    }),
+                );
                 return Ok(discovered);
             }
+
+            let fallback = model_context_window(model);
+            log_event(
+                "provider_store",
+                "context_window_fallback",
+                serde_json::json!({
+                    "providerId": provider.id.as_str(),
+                    "providerType": provider.provider_type.as_str(),
+                    "model": normalized.as_str(),
+                    "contextWindow": fallback,
+                    "reason": "provider_models_endpoint_unavailable",
+                }),
+            );
+            return Ok(fallback);
         }
 
-        Ok(model_context_window(model))
+        let fallback = model_context_window(model);
+        log_event(
+            "provider_store",
+            "context_window_fallback",
+            serde_json::json!({
+                "providerId": null,
+                "model": normalized.as_str(),
+                "contextWindow": fallback,
+                "reason": "no_provider",
+            }),
+        );
+        Ok(fallback)
     }
 
     pub fn create(&self, input: ProviderConfigInput) -> AppResult<ProviderSummary> {
         let name = input.name.trim();
         let endpoint = input.endpoint.trim();
-        let model = input.model.trim();
-        if name.is_empty() || endpoint.is_empty() || model.is_empty() {
-            return Err(AppError::new("Provider 名称、端点与默认模型不能为空"));
+        if name.is_empty() || endpoint.is_empty() {
+            return Err(AppError::new("Provider 名称与端点不能为空"));
         }
+
+        let (default_model, normalized_models) = normalize_provider_models(&input.model, &input.models)?;
 
         let now = chrono::Utc::now().to_rfc3339();
         let id = Uuid::new_v4().to_string();
         let extra = ProviderExtra {
-            models: input
-                .models
-                .into_iter()
-                .map(|item| item.trim().to_string())
-                .filter(|item| !item.is_empty())
-                .collect(),
+            models: normalized_models,
             headers: input.headers,
             context_windows: Default::default(),
         };
@@ -201,7 +249,7 @@ impl ProviderStore {
                     .to_string(),
                 endpoint,
                 input.api_key.filter(|value| !value.trim().is_empty()),
-                model,
+                default_model,
                 serde_json::to_string(&extra)?,
                 bool_to_int(input.enabled),
                 bool_to_int(make_default),
@@ -214,7 +262,175 @@ impl ProviderStore {
         let record = self
             .get_by_id(&id)?
             .ok_or_else(|| AppError::new("新建 Provider 后未能读取记录"))?;
+        log_event(
+            "provider_store",
+            "provider_created",
+            serde_json::json!({
+                "providerId": record.id.as_str(),
+                "providerType": record.provider_type.as_str(),
+                "name": record.name.as_str(),
+                "endpoint": record.endpoint.as_str(),
+                "default": record.is_default,
+                "enabled": record.enabled,
+                "model": record.model.as_str(),
+                "models": record.extra.models.clone(),
+            }),
+        );
         Ok(ProviderSummary::from(&record))
+    }
+
+    pub fn update(&self, id: &str, input: ProviderConfigInput) -> AppResult<ProviderSummary> {
+        let existing = self
+            .get_by_id(id)?
+            .ok_or_else(|| AppError::new("指定 Provider 不存在"))?;
+
+        let name = input.name.trim();
+        let endpoint = input.endpoint.trim();
+        if name.is_empty() || endpoint.is_empty() {
+            return Err(AppError::new("Provider 名称与端点不能为空"));
+        }
+
+        let (default_model, normalized_models) =
+            normalize_provider_models(&input.model, &input.models)?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut context_windows = existing.extra.context_windows.clone();
+        if !existing.endpoint.eq_ignore_ascii_case(endpoint) {
+            context_windows.clear();
+        }
+        let extra = ProviderExtra {
+            models: normalized_models,
+            headers: input.headers,
+            context_windows,
+        };
+
+        let make_default = existing.is_default || input.is_default;
+
+        let mut connection = self.db.connection()?;
+        let tx = connection.transaction()?;
+
+        if make_default {
+            tx.execute("UPDATE providers SET is_default = 0", [])?;
+        }
+
+        tx.execute(
+            r#"
+            UPDATE providers
+            SET name = ?2,
+                provider_type = ?3,
+                endpoint = ?4,
+                api_key = ?5,
+                model = ?6,
+                extra_json = ?7,
+                enabled = ?8,
+                is_default = ?9,
+                updated_at = ?10
+            WHERE id = ?1
+            "#,
+            params![
+                id,
+                name,
+                serde_json::to_string(&input.provider_type)?
+                    .trim_matches('"')
+                    .to_string(),
+                endpoint,
+                input.api_key.filter(|value| !value.trim().is_empty()),
+                default_model,
+                serde_json::to_string(&extra)?,
+                bool_to_int(input.enabled),
+                bool_to_int(make_default),
+                now,
+            ],
+        )?;
+
+        tx.commit()?;
+
+        let record = self
+            .get_by_id(id)?
+            .ok_or_else(|| AppError::new("更新 Provider 后未能读取记录"))?;
+        log_event(
+            "provider_store",
+            "provider_updated",
+            serde_json::json!({
+                "providerId": record.id.as_str(),
+                "providerType": record.provider_type.as_str(),
+                "name": record.name.as_str(),
+                "endpoint": record.endpoint.as_str(),
+                "default": record.is_default,
+                "enabled": record.enabled,
+                "model": record.model.as_str(),
+                "models": record.extra.models.clone(),
+            }),
+        );
+        Ok(ProviderSummary::from(&record))
+    }
+
+    pub async fn fetch_models_preview(
+        &self,
+        provider_type: ProviderType,
+        endpoint: &str,
+        api_key: Option<&str>,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> AppResult<Vec<String>> {
+        if provider_type != ProviderType::OpenAiCompatible {
+            return Ok(Vec::new());
+        }
+
+        let endpoint = normalize_models_endpoint(endpoint);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|error| AppError::new(error.to_string()))?;
+
+        let mut request = client
+            .get(endpoint.as_str())
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
+            request = request.bearer_auth(api_key.trim());
+        }
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+
+        let response = request.send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body_preview = truncate_for_log(&response.text().await.unwrap_or_default());
+            return Err(AppError::new(format!(
+                "拉取模型列表失败: status={} body={}",
+                status.as_u16(),
+                body_preview
+            )));
+        }
+
+        let payload = response.json::<serde_json::Value>().await?;
+        let candidates = payload
+            .get("data")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .or_else(|| payload.as_array().cloned())
+            .unwrap_or_default();
+
+        let mut models = Vec::new();
+        let mut dedupe = BTreeSet::new();
+        for item in candidates {
+            let Some(model) = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .or_else(|| item.get("name").and_then(|value| value.as_str()))
+                .or_else(|| item.get("model").and_then(|value| value.as_str()))
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            if dedupe.insert(model.clone()) {
+                models.push(model);
+            }
+        }
+
+        Ok(models)
     }
 
     pub fn ensure_default_from_env(&self) -> AppResult<Option<ProviderSummary>> {
@@ -255,6 +471,17 @@ impl ProviderStore {
             headers: Default::default(),
         })?;
 
+        log_event(
+            "provider_store",
+            "provider_created_from_env",
+            serde_json::json!({
+                "providerId": created.id.as_str(),
+                "providerType": created.provider_type.as_str(),
+                "model": created.model.as_str(),
+                "endpoint": created.endpoint.as_str(),
+            }),
+        );
+
         Ok(Some(created))
     }
 
@@ -266,6 +493,7 @@ impl ProviderStore {
         let mut connection = self.db.connection()?;
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM providers WHERE id = ?1", params![id])?;
+        let mut replacement_assigned = false;
 
         if provider.is_default {
             let replacement = tx
@@ -281,10 +509,20 @@ impl ProviderStore {
                     "UPDATE providers SET is_default = 1, updated_at = ?2 WHERE id = ?1",
                     params![replacement, chrono::Utc::now().to_rfc3339()],
                 )?;
+                replacement_assigned = true;
             }
         }
 
         tx.commit()?;
+        log_event(
+            "provider_store",
+            "provider_deleted",
+            serde_json::json!({
+                "providerId": provider.id.as_str(),
+                "wasDefault": provider.is_default,
+                "replacementAssigned": replacement_assigned,
+            }),
+        );
         Ok(())
     }
 
@@ -348,6 +586,15 @@ impl ProviderStore {
                 chrono::Utc::now().to_rfc3339()
             ],
         )?;
+        log_event(
+            "provider_store",
+            "context_window_persisted",
+            serde_json::json!({
+                "providerId": provider.id.as_str(),
+                "model": model,
+                "contextWindow": context_window,
+            }),
+        );
         Ok(())
     }
 }
@@ -366,41 +613,125 @@ async fn fetch_context_window_from_provider_async(
 
     let endpoint = normalize_models_endpoint(&provider.endpoint);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|error| AppError::new(error.to_string()))?;
 
-    let mut request = client.get(endpoint);
-    if let Some(api_key) = provider
-        .api_key
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        request = request.bearer_auth(api_key.trim());
-    }
-    for (key, value) in &provider.extra.headers {
-        request = request.header(key, value);
+    for (attempt, delay_ms) in MODELS_FETCH_RETRY_DELAYS_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        }
+
+        let started_at = Instant::now();
+        log_event(
+            "provider_store",
+            "context_window_probe_attempt",
+            serde_json::json!({
+                "providerId": provider.id.as_str(),
+                "attempt": attempt + 1,
+                "maxAttempts": MODELS_FETCH_RETRY_DELAYS_MS.len(),
+                "endpoint": endpoint.as_str(),
+                "model": model,
+            }),
+        );
+
+        let mut request = client
+            .get(endpoint.as_str())
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(api_key) = provider
+            .api_key
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            request = request.bearer_auth(api_key.trim());
+        }
+        for (key, value) in &provider.extra.headers {
+            request = request.header(key, value);
+        }
+
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                log_event(
+                    "provider_store",
+                    "context_window_probe_network_error",
+                    serde_json::json!({
+                        "providerId": provider.id.as_str(),
+                        "attempt": attempt + 1,
+                        "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        "error": error.to_string(),
+                    }),
+                );
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let should_retry = status.is_server_error() || status.as_u16() == 429;
+            let body_preview = truncate_for_log(&response.text().await.unwrap_or_default());
+            log_event(
+                "provider_store",
+                "context_window_probe_http_error",
+                serde_json::json!({
+                    "providerId": provider.id.as_str(),
+                    "attempt": attempt + 1,
+                    "elapsedMs": started_at.elapsed().as_millis() as u64,
+                    "status": status.as_u16(),
+                    "retry": should_retry,
+                    "bodyPreview": body_preview,
+                }),
+            );
+            if should_retry {
+                continue;
+            }
+            return Ok(None);
+        }
+
+        let payload = match response.json::<serde_json::Value>().await {
+            Ok(payload) => payload,
+            Err(error) => {
+                log_event(
+                    "provider_store",
+                    "context_window_probe_parse_error",
+                    serde_json::json!({
+                        "providerId": provider.id.as_str(),
+                        "attempt": attempt + 1,
+                        "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        "error": error.to_string(),
+                    }),
+                );
+                continue;
+            }
+        };
+
+        let resolved = extract_context_window_from_models_payload(&payload, model);
+        log_event(
+            "provider_store",
+            "context_window_probe_finished",
+            serde_json::json!({
+                "providerId": provider.id.as_str(),
+                "attempt": attempt + 1,
+                "elapsedMs": started_at.elapsed().as_millis() as u64,
+                "resolved": resolved,
+            }),
+        );
+
+        if resolved.is_some() {
+            return Ok(resolved);
+        }
     }
 
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(_) => return Ok(None),
-    };
-    let payload: serde_json::Value = match response.error_for_status() {
-        Ok(response) => match response.json().await {
-            Ok(json) => json,
-            Err(_) => return Ok(None),
-        },
-        Err(_) => return Ok(None),
-    };
-
-    Ok(extract_context_window_from_models_payload(&payload, model))
+    Ok(None)
 }
 
 fn normalize_models_endpoint(endpoint: &str) -> String {
     let trimmed = endpoint.trim_end_matches('/');
     if trimmed.ends_with("/chat/completions") {
         return format!("{}/models", trimmed.trim_end_matches("/chat/completions"));
+    }
+    if trimmed.ends_with("/responses") {
+        return format!("{}/models", trimmed.trim_end_matches("/responses"));
     }
     if trimmed.ends_with("/v1") {
         return format!("{trimmed}/models");
@@ -423,6 +754,8 @@ fn extract_context_window_from_models_payload(
         .or_else(|| payload.as_array().cloned())
         .unwrap_or_default();
 
+    let mut fallback_candidate = None;
+
     for item in candidates {
         let item_id = item
             .get("id")
@@ -432,29 +765,51 @@ fn extract_context_window_from_models_payload(
                 item.get("name")
                     .and_then(|value| value.as_str())
                     .map(normalize_model_key)
+            })
+            .or_else(|| {
+                item.get("model")
+                    .and_then(|value| value.as_str())
+                    .map(normalize_model_key)
             });
-        if item_id.as_deref() != Some(target.as_str()) {
-            continue;
-        }
 
-        if let Some(tokens) = read_context_window_value(&item) {
-            return Some(tokens);
+        let Some(item_id) = item_id else {
+            continue;
+        };
+
+        if item_id == target {
+            if let Some(tokens) = read_context_window_value(&item) {
+                return Some(tokens);
+            }
+        } else if fallback_candidate.is_none()
+            && (item_id.contains(target.as_str()) || target.contains(item_id.as_str()))
+        {
+            fallback_candidate = read_context_window_value(&item);
         }
     }
 
-    None
+    fallback_candidate
 }
 
 fn read_context_window_value(item: &serde_json::Value) -> Option<usize> {
     [
         item.get("context_window"),
         item.get("contextWindow"),
+        item.get("max_context_length"),
+        item.get("maxContextLength"),
         item.get("max_input_tokens"),
         item.get("maxInputTokens"),
         item.get("input_token_limit"),
         item.get("inputTokenLimit"),
         item.get("context_length"),
         item.get("contextLength"),
+        item.get("token_limit"),
+        item.get("tokenLimit"),
+        item.get("model_spec")
+            .and_then(|value| value.get("availableContextTokens")),
+        item.get("limits")
+            .and_then(|value| value.get("max_context_tokens")),
+        item.get("limits")
+            .and_then(|value| value.get("maxContextTokens")),
         item.get("limits")
             .and_then(|value| value.get("context_window")),
         item.get("limits")
@@ -462,7 +817,61 @@ fn read_context_window_value(item: &serde_json::Value) -> Option<usize> {
     ]
     .into_iter()
     .flatten()
-    .find_map(|value| value.as_u64().map(|tokens| tokens as usize))
+    .find_map(read_usize_value)
+}
+
+fn read_usize_value(value: &serde_json::Value) -> Option<usize> {
+    if let Some(value) = value.as_u64() {
+        return Some(value as usize);
+    }
+
+    value
+        .as_str()
+        .and_then(|item| item.trim().parse::<usize>().ok())
+}
+
+fn truncate_for_log(value: &str) -> String {
+    const LIMIT: usize = 512;
+    if value.len() <= LIMIT {
+        return value.to_string();
+    }
+    format!("{}...(truncated)", &value[..LIMIT])
+}
+
+fn normalize_provider_models(model: &str, models: &[String]) -> AppResult<(String, Vec<String>)> {
+    let normalized_default = model.trim().to_string();
+
+    let mut dedupe = BTreeSet::new();
+    let mut normalized_models = Vec::new();
+
+    for item in models {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if dedupe.insert(trimmed.to_string()) {
+            normalized_models.push(trimmed.to_string());
+        }
+    }
+
+    if !normalized_default.is_empty() && dedupe.insert(normalized_default.clone()) {
+        normalized_models.insert(0, normalized_default.clone());
+    }
+
+    let default_model = if normalized_default.is_empty() {
+        normalized_models
+            .first()
+            .cloned()
+            .ok_or_else(|| AppError::new("请至少配置一个模型"))?
+    } else {
+        normalized_default
+    };
+
+    if normalized_models.is_empty() {
+        return Err(AppError::new("请至少配置一个模型"));
+    }
+
+    Ok((default_model, normalized_models))
 }
 
 fn bool_to_int(value: bool) -> i64 {

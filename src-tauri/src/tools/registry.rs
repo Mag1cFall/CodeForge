@@ -1,11 +1,14 @@
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::error::{AppError, AppResult};
 use crate::harness::sandbox::SandboxManager;
 
 use super::analysis_tools::{analyze_ast, check_complexity, find_code_smells, suggest_refactor};
-use super::file_tools::{apply_patch_text, list_directory, read_file, resolve_path, write_file};
+use super::emit_structured_log;
+use super::file_tools::{
+    apply_patch_text, apply_structured_patch, list_directory, read_file, resolve_path, write_file,
+};
 use super::schema::ToolSchema;
 use super::search_tools::{grep_pattern, search_code};
 use super::shell_tools::run_shell;
@@ -64,8 +67,8 @@ impl ToolRegistry {
             },
             ToolSchema {
                 name: "apply_patch".into(),
-                description: "基于原始片段进行单次文本补丁替换".into(),
-                parameters: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["path", "old", "new"] }),
+                description: "使用标准补丁格式批量修改文件（兼容旧版 path/old/new 参数）".into(),
+                parameters: serde_json::json!({ "type": "object", "properties": { "input": { "type": "string" }, "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["input"] }),
             },
             ToolSchema {
                 name: "analyze_ast".into(),
@@ -96,7 +99,18 @@ impl ToolRegistry {
         args: serde_json::Value,
         context: &ToolExecutionContext,
     ) -> AppResult<String> {
-        match name {
+        let started = Instant::now();
+        emit_structured_log(
+            "registry",
+            "tool_execute_start",
+            serde_json::json!({
+                "name": name,
+                "workspaceRoot": context.workspace_root.as_ref().map(|path| path.display().to_string()),
+                "args": summarize_args(&args),
+            }),
+        );
+
+        let result = match name {
             "read_file" => {
                 let path = require_string(&args, "path")?;
                 let resolved = resolve_path(context.workspace_root.as_deref(), path)?;
@@ -124,7 +138,7 @@ impl ToolRegistry {
                 let workdir = args
                     .get("workdir")
                     .and_then(|value| value.as_str())
-                    .map(|value| resolve_path(context.workspace_root.as_deref(), value))
+                    .map(|value| resolve_workdir(context.workspace_root.as_deref(), value))
                     .transpose()?
                     .or_else(|| context.workspace_root.clone())
                     .ok_or_else(|| AppError::new("run_shell 缺少工作目录"))?;
@@ -148,12 +162,23 @@ impl ToolRegistry {
                 Ok(format!("WROTE {}", resolved.display()))
             }
             "apply_patch" => {
-                let path = require_string(&args, "path")?;
-                let old = require_string(&args, "old")?;
-                let new = require_string(&args, "new")?;
-                let resolved = resolve_path(context.workspace_root.as_deref(), path)?;
-                let updated = apply_patch_text(&resolved, old, new)?;
-                Ok(updated)
+                if let Some(input) = args
+                    .get("input")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    let workspace_root = context
+                        .workspace_root
+                        .as_deref()
+                        .ok_or_else(|| AppError::new("apply_patch 缺少工作区根目录"))?;
+                    apply_structured_patch(workspace_root, input)
+                } else {
+                    let path = require_string(&args, "path")?;
+                    let old = require_string(&args, "old")?;
+                    let new = require_string(&args, "new")?;
+                    let resolved = resolve_path(context.workspace_root.as_deref(), path)?;
+                    apply_patch_text(&resolved, old, new)
+                }
             }
             "analyze_ast" => {
                 let path = require_string(&args, "path")?;
@@ -176,8 +201,67 @@ impl ToolRegistry {
                 Ok(serde_json::to_string(&suggest_refactor(&resolved)?)?)
             }
             _ => Err(AppError::new(format!("未知工具: {name}"))),
+        };
+
+        match &result {
+            Ok(output) => {
+                emit_structured_log(
+                    "registry",
+                    "tool_execute_finish",
+                    serde_json::json!({
+                        "name": name,
+                        "status": "ok",
+                        "elapsedMs": started.elapsed().as_millis(),
+                        "resultBytes": output.len(),
+                    }),
+                );
+            }
+            Err(error) => {
+                emit_structured_log(
+                    "registry",
+                    "tool_execute_finish",
+                    serde_json::json!({
+                        "name": name,
+                        "status": "error",
+                        "elapsedMs": started.elapsed().as_millis(),
+                        "error": error.message.clone(),
+                    }),
+                );
+            }
         }
+
+        result
     }
+}
+
+fn resolve_workdir(root: Option<&Path>, input: &str) -> AppResult<PathBuf> {
+    let trimmed = input.trim();
+    if let Some(root) = root {
+        if trimmed.is_empty() || trimmed == "." || trimmed == "/" || trimmed == "\\" {
+            return Ok(root.to_path_buf());
+        }
+
+        let path = PathBuf::from(trimmed);
+        if path.is_absolute() {
+            if path.starts_with(root) {
+                return Ok(if path.exists() {
+                    path
+                } else {
+                    root.to_path_buf()
+                });
+            }
+            return Ok(root.to_path_buf());
+        }
+
+        let candidate = root.join(path);
+        return Ok(if candidate.exists() {
+            candidate
+        } else {
+            root.to_path_buf()
+        });
+    }
+
+    resolve_path(None, trimmed)
 }
 
 fn require_string<'a>(args: &'a serde_json::Value, key: &str) -> AppResult<&'a str> {
@@ -185,4 +269,38 @@ fn require_string<'a>(args: &'a serde_json::Value, key: &str) -> AppResult<&'a s
         .and_then(|value| value.as_str())
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| AppError::new(format!("缺少参数: {key}")))
+}
+
+fn summarize_args(args: &serde_json::Value) -> serde_json::Value {
+    truncate_json(args, 0)
+}
+
+fn truncate_json(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+    if depth >= 3 {
+        return serde_json::json!("<truncated>");
+    }
+
+    match value {
+        serde_json::Value::String(text) => {
+            if text.chars().count() <= 160 {
+                serde_json::json!(text)
+            } else {
+                serde_json::json!(format!("{}...", text.chars().take(160).collect::<String>()))
+            }
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .take(20)
+                .map(|item| truncate_json(item, depth + 1))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .take(20)
+                .map(|(key, value)| (key.clone(), truncate_json(value, depth + 1)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }

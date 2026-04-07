@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Wrench, Play, FileCode, Search, Terminal, BarChart3, Minimize2, type LucideIcon } from 'lucide-react';
 import { useAppPreferences } from '../lib/app-preferences';
-import { toolList, toolExecute, ToolSchema } from '../lib/backend';
+import { toolList, toolExecute, toolUsageCounts, ToolSchema } from '../lib/backend';
 import './PageCommon.css';
 
 interface ToolView extends ToolSchema {
@@ -57,13 +57,14 @@ export default function Tools() {
 
   const loadTools = useCallback(async () => {
     try {
-      const data = await toolList();
+      const [data, counts] = await Promise.all([toolList(), toolUsageCounts()]);
+      const callMap = new Map((counts ?? []).map((item) => [item.name, item.calls]));
       const next = (data ?? []).map((item) => {
         const meta = classifyTool(item.name);
         return {
           ...item,
           category: meta.category,
-          calls: 0,
+          calls: callMap.get(item.name) ?? 0,
           icon: meta.icon,
         };
       });
@@ -91,6 +92,7 @@ export default function Tools() {
       }
       const output = await toolExecute(toolName, parsed);
       setTestResults((prev) => ({ ...prev, [toolName]: output }));
+      await loadTools();
     } catch {
       setTestResults((prev) => ({
         ...prev,
@@ -117,7 +119,7 @@ export default function Tools() {
             <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>{tool.description}</p>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>调用 {tool.calls} 次</span>
-              <button className="btn btn-sm btn-secondary" onClick={() => setTestingTool(tool.name === testingTool ? null : tool.name)}>
+              <button type="button" className="btn btn-sm btn-secondary" onClick={() => setTestingTool(tool.name === testingTool ? null : tool.name)}>
                 {testingTool === tool.name ? <Minimize2 size={14} /> : <Play size={14} />} {testingTool === tool.name ? '收起' : '测试'}
               </button>
             </div>
@@ -131,7 +133,7 @@ export default function Tools() {
                     setTestArgs((prev) => ({ ...prev, [tool.name]: e.target.value }));
                   }}
                 />
-                <button className="btn btn-sm btn-primary" style={{ marginTop: 8 }} onClick={() => void runTest(tool.name)}><Play size={12}/> 执行测试</button>
+                <button type="button" className="btn btn-sm btn-primary" style={{ marginTop: 8 }} onClick={() => void runTest(tool.name)}><Play size={12}/> 执行测试</button>
                 {testResults[tool.name] && (
                   <pre style={{ marginTop: 8, padding: 8, background: 'var(--bg-main)', fontSize: 12, borderRadius: 4, color: 'var(--accent-green-light)', whiteSpace: 'pre-wrap' }}>
                     {testResults[tool.name]}
