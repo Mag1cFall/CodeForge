@@ -212,7 +212,7 @@ export default function TopBar() {
         <button
           type="button"
           className={`clever-theme-toggle ${isDark ? 'is-dark' : 'is-light'}`}
-          onClick={() => setTheme(isDark ? 'light' : 'dark')}
+          onClick={(e) => setTheme(isDark ? 'light' : 'dark', e)}
           title={t('topbar.themeToggle')}
         >
           <Sun className="icon-sun" size={18} />

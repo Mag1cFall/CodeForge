@@ -76,35 +76,77 @@
 }
 
 [data-theme='light'] {
-  /* Crisp Light Theme */
-  --bg-primary: #F0F0F0;
-  --bg-secondary: #F8F8F8;
-  --bg-tertiary: #E8E8E8;
-  --bg-card: #F8F8F8;
-  --bg-card-hover: #F0F0F0;
-  --bg-input: #F5F5F5;
-  --bg-sidebar: #F0F0F0;
-  --bg-overlay: rgba(0, 0, 0, 0.3);
+  /* Elegant Claude-inspired Light Theme */
+  --bg-primary: #F9F8F6;
+  --bg-secondary: #EFECE5;
+  --bg-tertiary: #E5E0D8;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FDFDFB;
+  --bg-input: #FFFFFF;
+  --bg-sidebar: #EFECE5;
+  --bg-overlay: rgba(38, 36, 33, 0.2);
 
-  --border-primary: #E0E0E0;
-  --border-secondary: #CCCCCC;
-  --border-accent: #000000;
+  --border-primary: #E5E0D8;
+  --border-secondary: #D6CFC4;
+  --border-accent: #D97757;
 
-  --text-primary: #151515;
-  --text-secondary: #606060;
-  --text-tertiary: #808080;
+  --text-primary: #262421;
+  --text-secondary: #5C5852;
+  --text-tertiary: #928B81;
   --text-inverse: #FFFFFF;
 
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
-  --shadow-lg: 0 12px 24px rgba(0,0,0,0.08);
-  --shadow-glow-primary: 0 0 0 1px rgba(0,0,0,0.05);
-  --shadow-glow-secondary: 0 0 0 1px rgba(0,0,0,0.05);
-  --shadow-glow-blue: 0 0 0 1px var(--accent-blue);
+  /* Classic Claude-inspired accents */
+  --accent-blue: #3E738C;
+  --accent-purple: #7B6888;
+  --accent-green: #4A7A5D;
+  --accent-orange: #D97757;
   
-  --gradient-card: linear-gradient(180deg, rgba(0, 0, 0, 0.01) 0%, rgba(0, 0, 0, 0) 100%);
+  --gradient-primary: linear-gradient(180deg, var(--accent-orange) 0%, #C05F41 100%);
+  --gradient-secondary: linear-gradient(135deg, var(--accent-blue) 0%, #2A5469 100%);
+  --gradient-success: linear-gradient(135deg, var(--accent-green) 0%, #325841 100%);
+
+  --shadow-sm: 0 1px 2px rgba(38,36,33,0.03);
+  --shadow-md: 0 4px 12px rgba(38,36,33,0.05);
+  --shadow-lg: 0 16px 32px rgba(38,36,33,0.08);
+  --shadow-glow-primary: 0 0 0 1px rgba(38,36,33,0.04);
+  --shadow-glow-secondary: 0 0 0 1px rgba(38,36,33,0.04);
+  --shadow-glow-blue: 0 0 0 1px var(--accent-orange);
+  
+  --gradient-card: linear-gradient(180deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0) 100%);
 }
 
-body.theme-transitioning {
-  transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+/* Cinematic Theme Transition */
+body.theme-transitioning,
+body.theme-transitioning * {
+  /* Using a cinematic cubic-bezier for a breathtaking, smooth crossfade */
+  transition: background-color 0.8s cubic-bezier(0.22, 1, 0.36, 1), 
+              color 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+              filter 0.8s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  /* Add a noticeable but elegant exposure shift during transition */
+  animation: theme-shift-exposure 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes theme-shift-exposure {
+  0% { filter: blur(0px) contrast(1) brightness(1); }
+  25% { filter: blur(0.5px) contrast(0.9) brightness(0.95); }
+  75% { filter: blur(0.5px) contrast(0.9) brightness(0.95); }
+  100% { filter: blur(0px) contrast(1) brightness(1); }
+}
+
+/* View Transitions API for theme toggle */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+  display: block;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
 }

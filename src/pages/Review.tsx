@@ -74,17 +74,19 @@ export default function Review() {
             if (fileMatch) {
               const total = parseInt(fileMatch[1], 10);
               setScannedFiles(total);
-              setTotalBatches(Math.ceil(total / 8));
+            }
+            const batchInfo = payload.log.match(/共\s*(\d+)\s*批/);
+            if (batchInfo) {
+              setTotalBatches(parseInt(batchInfo[1], 10));
             }
             setProgressPercent(10);
           } else if (payload.step === 'review') {
-            const batchMatch = payload.log.match(/(\d+)\/(\d+)\s*批/);
-            if (batchMatch) {
-              const current = parseInt(batchMatch[1], 10);
-              const total = parseInt(batchMatch[2], 10);
-              setCompletedBatches(current);
+            const done = (payload as any).completed;
+            const total = (payload as any).totalBatches;
+            if (typeof done === 'number' && typeof total === 'number' && total > 0) {
+              setCompletedBatches((prev) => Math.max(prev, done));
               setTotalBatches(total);
-              setProgressPercent(10 + Math.round((current / total) * 75));
+              setProgressPercent((prev) => Math.max(prev, 10 + Math.round((done / total) * 75)));
             }
           } else if (payload.step === 'heuristic') {
             setProgressPercent(90);

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react';
+import { flushSync } from 'react-dom';
 import {
   DEFAULT_LOCALE,
   DEFAULT_THEME,
@@ -17,7 +18,7 @@ interface AppPreferencesValue {
   theme: ThemePreference;
   isDark: boolean;
   setLocale: (locale: Locale) => void;
-  setTheme: (theme: ThemePreference) => void;
+  setTheme: (theme: ThemePreference, event?: React.MouseEvent | MouseEvent) => void;
   t: (key: TranslationKey) => string;
 }
 
@@ -42,7 +43,7 @@ export function AppPreferencesProvider({ children }: PropsWithChildren) {
     root.classList.add('theme-transitioning');
     root.setAttribute('data-theme', isDark ? 'dark' : 'light');
     root.lang = locale;
-    const timer = window.setTimeout(() => root.classList.remove('theme-transitioning'), 500);
+    const timer = window.setTimeout(() => root.classList.remove('theme-transitioning'), 850);
     return () => window.clearTimeout(timer);
   }, [isDark, locale]);
 
@@ -80,9 +81,46 @@ export function AppPreferencesProvider({ children }: PropsWithChildren) {
     localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
   }, []);
 
-  const setTheme = useCallback((nextTheme: ThemePreference) => {
-    setThemeState(nextTheme);
-    localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  const setTheme = useCallback((nextTheme: ThemePreference, event?: React.MouseEvent | MouseEvent) => {
+    // Check for View Transitions API support
+    const isTransitionSupported = typeof document !== 'undefined' && 'startViewTransition' in document;
+    
+    if (event && isTransitionSupported) {
+      const x = ('clientX' in event) ? event.clientX : innerWidth / 2;
+      const y = ('clientY' in event) ? event.clientY : innerHeight / 2;
+      
+      const endRadius = Math.hypot(
+        Math.max(x, innerWidth - x),
+        Math.max(y, innerHeight - y)
+      );
+
+      // Cast document to any since TS might not have startViewTransition
+      const transition = (document as any).startViewTransition(() => {
+        flushSync(() => {
+          setThemeState(nextTheme);
+        });
+        localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      });
+
+      transition.ready.then(() => {
+        document.documentElement.animate(
+          {
+            clipPath: [
+              `circle(0px at ${x}px ${y}px)`,
+              `circle(${endRadius}px at ${x}px ${y}px)`,
+            ],
+          },
+          {
+            duration: 800,
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            pseudoElement: '::view-transition-new(root)',
+          }
+        );
+      });
+    } else {
+      setThemeState(nextTheme);
+      localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    }
   }, []);
 
   const value: AppPreferencesValue = {

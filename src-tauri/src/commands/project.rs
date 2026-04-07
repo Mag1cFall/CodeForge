@@ -585,16 +585,6 @@ pub async fn project_review_ai<R: tauri::Runtime>(
         .active_instructions()
         .map_err(|e| e.message.clone())?;
 
-    let runtime = AgentRuntime {
-        agent_store: state.agents.clone(),
-        provider_store: state.providers.clone(),
-        tool_registry: state.tools.clone(),
-        session_manager: state.sessions.clone(),
-        permission_manager: state.permission.clone(),
-        budget: state.budget.clone(),
-        logs: state.logs.clone(),
-        context_window_overrides: settings.context_window_overrides.clone(),
-    };
 
     let tree = build_project_tree(&review_root, &filtered, 200);
 
@@ -603,82 +593,147 @@ pub async fn project_review_ai<R: tauri::Runtime>(
         .map(|p| to_relative_path(&review_root, p))
         .collect();
 
-    // 每批独立 session：防止上下文跨批累积爆 context window
     let batch_size = 20;
-    let mut all_issues: Vec<ReviewIssue> = Vec::new();
     let total_batches = (file_list.len() + batch_size - 1) / batch_size;
+    let max_concurrency = 3usize;
 
-    for (batch_idx, batch) in file_list.chunks(batch_size).enumerate() {
-        app.emit(
-            "review_progress",
-            serde_json::json!({
-                "step": "review",
-                "log": format!("AI 审查第 {}/{} 批（{} 个文件）...", batch_idx + 1, total_batches, batch.len())
-            }),
-        )
-        .ok();
+    app.emit(
+        "review_progress",
+        serde_json::json!({
+            "step": "review",
+            "log": format!("共 {} 批待审查，并发度 {}...", total_batches, max_concurrency)
+        }),
+    )
+    .ok();
 
-        // 每批创建独立 session，保证 Agent 拥有干净的上下文窗口
-        let batch_session = state
-            .sessions
-            .create(
-                agent.id.clone(),
-                Some(format!("{} [{}/{}]", session_title_base, batch_idx + 1, total_batches)),
-            )
-            .map_err(|e| e.message.clone())?;
+    // 准备所有批次任务
+    let batches: Vec<Vec<String>> = file_list
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect();
 
-        let file_paths = batch.join("\n");
+    let all_issues = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<ReviewIssue>::new()));
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        let prompt = format!(
-            "你是一个专业的代码审查员。请审查以下文件，找出 bug、安全问题、\
-            性能问题、可维护性问题和最佳实践违反。\n\
-            \n## 项目结构\n```\n{tree}\n```\n\
-            \n## 本批待审查文件\n```\n{file_paths}\n```\n\
-            \n## 你的工作方式\n\
-            1. 使用 read_file 工具逐个读取上面列出的文件\n\
-            2. 分析每个文件的代码质量\n\
-            3. 如果需要理解上下文，可以用 search_code 或 grep_pattern 搜索相关引用\n\
-            4. 完成分析后，以 JSON 数组格式输出所有发现的问题\n\
-            \n## 输出格式\n\
-            最终回复必须是一个 JSON 数组，每个元素包含：\n\
-            - file: 相对路径\n\
-            - line: 行号\n\
-            - severity: \"error\" | \"warning\" | \"info\"\n\
-            - rule: 规则名称\n\
-            - message: 问题描述\n\
-            - suggestion: 修复建议\n\
-            \n如果没有问题，输出 []。\n\
-            \n重要：不要修改任何文件，只做分析。",
-        );
+    // 用 semaphore 控制并发度
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency));
+    let mut handles = Vec::new();
 
-        let result = runtime
-            .run_headless(
-                &agent,
-                &batch_session,
-                prompt,
-                skill_instructions.clone(),
-                Some(review_root.clone()),
-                AgentRunConfig::default(),
-            )
-            .await
-            .map_err(|e| e.message)?;
+    for (batch_idx, batch) in batches.into_iter().enumerate() {
+        let sem = semaphore.clone();
+        let app_clone = app.clone();
+        let agent_clone = agent.clone();
+        let tree_clone = tree.clone();
+        let review_root_clone = review_root.clone();
+        let skill_clone = skill_instructions.clone();
+        let session_title = format!("{} [{}/{}]", session_title_base, batch_idx + 1, total_batches);
+        let issues_ref = all_issues.clone();
+        let completed_ref = completed.clone();
+        let total = total_batches;
 
-        let parsed = parse_review_issues_from_llm(&result.content);
-        let count = parsed.len();
-        all_issues.extend(parsed);
+        // 每批独立的 runtime + budget（无全局限制）
+        let batch_runtime = AgentRuntime {
+            agent_store: state.agents.clone(),
+            provider_store: state.providers.clone(),
+            tool_registry: state.tools.clone(),
+            session_manager: state.sessions.clone(),
+            permission_manager: state.permission.clone(),
+            budget: crate::harness::budget::TokenBudget::new(usize::MAX, usize::MAX),
+            logs: state.logs.clone(),
+            context_window_overrides: settings.context_window_overrides.clone(),
+        };
+        let sessions = state.sessions.clone();
 
-        // 批次完成后删除临时 session，释放上下文
-        let _ = state.sessions.delete(&batch_session.id);
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok();
 
-        app.emit(
-            "review_progress",
-            serde_json::json!({
-                "step": "review",
-                "log": format!("第 {}/{} 批完成，发现 {} 个问题", batch_idx + 1, total_batches, count)
-            }),
-        )
-        .ok();
+            let batch_session = match sessions.create(
+                agent_clone.id.clone(),
+                Some(session_title),
+            ) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let file_paths = batch.join("\n");
+            let prompt = format!(
+                "你是一个专业的代码审查员。请审查以下文件，找出 bug、安全问题、\
+                性能问题、可维护性问题和最佳实践违反。\n\
+                \n## 项目结构\n```\n{tree_clone}\n```\n\
+                \n## 本批待审查文件\n```\n{file_paths}\n```\n\
+                \n## 你的工作方式\n\
+                1. 使用 read_file 工具逐个读取上面列出的文件\n\
+                2. 分析每个文件的代码质量\n\
+                3. 如果需要理解上下文，可以用 search_code 或 grep_pattern 搜索相关引用\n\
+                4. 完成分析后，以 JSON 数组格式输出所有发现的问题\n\
+                \n## 输出格式\n\
+                最终回复必须是一个 JSON 数组，每个元素包含：\n\
+                - file: 相对路径\n\
+                - line: 行号\n\
+                - severity: \"error\" | \"warning\" | \"info\"\n\
+                - rule: 规则名称\n\
+                - message: 问题描述\n\
+                - suggestion: 修复建议\n\
+                \n如果没有问题，输出 []。\n\
+                \n重要：不要修改任何文件，只做分析。",
+            );
+
+            let result = batch_runtime
+                .run_headless(
+                    &agent_clone,
+                    &batch_session,
+                    prompt,
+                    skill_clone,
+                    Some(review_root_clone),
+                    AgentRunConfig::default(),
+                )
+                .await;
+
+            let _ = sessions.delete(&batch_session.id);
+
+            let done = completed_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+            match result {
+                Ok(res) => {
+                    let parsed = parse_review_issues_from_llm(&res.content);
+                    let count = parsed.len();
+                    issues_ref.lock().await.extend(parsed);
+                    app_clone.emit(
+                        "review_progress",
+                        serde_json::json!({
+                            "step": "review",
+                            "completed": done,
+                            "totalBatches": total,
+                            "log": format!("第 {}/{} 批完成，发现 {} 个问题（{}/{}）", batch_idx + 1, total, count, done, total)
+                        }),
+                    ).ok();
+                }
+                Err(e) => {
+                    app_clone.emit(
+                        "review_progress",
+                        serde_json::json!({
+                            "step": "review",
+                            "completed": done,
+                            "totalBatches": total,
+                            "log": format!("第 {}/{} 批失败: {}（{}/{}）", batch_idx + 1, total, e.message, done, total)
+                        }),
+                    ).ok();
+                }
+            }
+        });
+
+        handles.push(handle);
     }
+
+    // 等待所有并发批次完成
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    let mut all_issues = match std::sync::Arc::try_unwrap(all_issues) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(arc) => arc.blocking_lock().clone(),
+    };
 
     app.emit(
         "review_progress",
