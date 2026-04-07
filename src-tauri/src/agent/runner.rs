@@ -18,7 +18,7 @@ use super::definition::{AgentRecord, AgentStore, AgentStatus};
 use super::hooks::{AgentHooks, TraceHooks};
 use super::prompt::build_system_prompt;
 
-const MAX_TOOL_ROUNDS: usize = 8;
+const MAX_TOOL_ROUNDS: usize = 16;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +35,9 @@ pub struct AgentRunConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub approved_tool_names: Vec<String>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +220,16 @@ impl AgentRuntime {
             .collect::<Vec<_>>();
 
         let context = super::context::AgentContextManager::new(super::context::ContextWindow::default());
-        let tool_schemas = self.tool_registry.list();
+        let all_tools = self.tool_registry.list();
+        // agent.tools 作为白名单：非空时只加载声明的工具，空则全部加载
+        let tool_schemas: Vec<_> = if agent.tools.is_empty() {
+            all_tools
+        } else {
+            all_tools
+                .into_iter()
+                .filter(|t| agent.tools.iter().any(|name| name == &t.name))
+                .collect()
+        };
         let tool_set = ToolSet::new(tool_schemas.clone());
         let tool_defs = tool_schemas
             .iter()
@@ -238,7 +250,7 @@ impl AgentRuntime {
                 .ok_or_else(|| crate::error::AppError::new("没有可用的默认 Provider"))?
         };
         let provider = build_provider(provider_record.clone())?;
-        let model = config.model.clone().unwrap_or_else(|| agent.model.clone());
+        let model = resolve_effective_model(&config, agent, &provider_record);
         let context_window = configured_context_window(
             &self.context_window_overrides,
             Some(&provider_record),
@@ -267,8 +279,9 @@ impl AgentRuntime {
                     messages: snapshot.recent_messages.clone(),
                     system_prompt: Some(build_system_prompt(agent, &skill_instructions, &snapshot.summary, &tool_schemas)),
                     model: Some(model.clone()),
-                    max_tokens: Some(1024),
-                    temperature: Some(0.2),
+                    max_tokens: Some(config.max_tokens.unwrap_or(4096)),
+                    temperature: Some(config.temperature.unwrap_or(0.2)),
+                    top_p: config.top_p,
                     tools: tool_defs.clone(),
                 })
                 .await
@@ -411,8 +424,9 @@ impl AgentRuntime {
                     messages: snapshot.recent_messages.clone(),
                     system_prompt: Some(build_system_prompt(agent, &skill_instructions, &snapshot.summary, &tool_schemas)),
                     model: Some(model.clone()),
-                    max_tokens: Some(1024),
-                    temperature: Some(0.2),
+                    max_tokens: Some(config.max_tokens.unwrap_or(4096)),
+                    temperature: Some(config.temperature.unwrap_or(0.2)),
+                    top_p: config.top_p,
                     tools: vec![],
                 })
                 .await
@@ -472,6 +486,26 @@ impl AgentRuntime {
             permission_request,
         })
     }
+}
+
+fn resolve_effective_model(
+    config: &AgentRunConfig,
+    agent: &AgentRecord,
+    provider: &crate::llm::model::ProviderRecord,
+) -> String {
+    if let Some(model) = config.model.as_ref().filter(|m| !m.trim().is_empty()) {
+        return model.clone();
+    }
+
+    let agent_model = agent.model.trim();
+    if !agent_model.is_empty() {
+        let models = &provider.extra.models;
+        if models.is_empty() || models.iter().any(|m| m.eq_ignore_ascii_case(agent_model)) {
+            return agent_model.to_string();
+        }
+    }
+
+    provider.model.clone()
 }
 
 fn estimate_tokens(messages: &[ChatMessage]) -> usize {

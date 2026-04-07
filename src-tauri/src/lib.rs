@@ -47,6 +47,8 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             commands::provider::provider_fetch_models,
             commands::agent::agent_list,
             commands::agent::agent_create,
+            commands::agent::agent_update,
+            commands::agent::agent_delete,
             commands::agent::agent_start,
             commands::agent::agent_stop,
             commands::tool::tool_list,
@@ -68,6 +70,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             commands::project::project_open,
             commands::project::project_clone,
             commands::project::project_review,
+            commands::project::project_review_ai,
         ])
 }
 

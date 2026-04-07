@@ -237,6 +237,7 @@ pub struct ChatRequest {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     #[serde(default)]
     pub tools: Vec<ToolDefinition>,
 }

@@ -154,6 +154,11 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_logs_kind ON logs(kind);
             "#,
         )?;
+
+        let _ = connection.execute_batch(
+            "ALTER TABLE agents ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0;"
+        );
+
         Ok(())
     }
 

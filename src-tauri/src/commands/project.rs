@@ -488,6 +488,317 @@ fn severity_rank(severity: &str) -> usize {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewConfig {
+    pub path: String,
+    pub sandbox: bool,
+    pub agent_name: Option<String>,
+    pub scope: Option<String>,
+}
+
+#[tauri::command]
+pub async fn project_review_ai<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    config: ReviewConfig,
+) -> Result<(), String> {
+    use crate::agent::runner::{AgentRunConfig, AgentRuntime};
+    use crate::commands::settings::get_settings;
+
+    let source = PathBuf::from(&config.path);
+    let sandbox_root_canonical = std::fs::canonicalize(&state.config.sandbox_root).ok();
+    let source_canonical = std::fs::canonicalize(&source).ok();
+
+    // 如果源路径已经在沙箱内（例如 project_clone 的结果），直接使用，不再二次复制
+    let already_in_sandbox = match (&source_canonical, &sandbox_root_canonical) {
+        (Some(src), Some(root)) => src.starts_with(root),
+        _ => false,
+    };
+
+    let review_root = if already_in_sandbox {
+        source.clone()
+    } else if config.sandbox {
+        state
+            .sandbox
+            .prepare_workspace(&source)
+            .map_err(|e| e.message.clone())?
+            .path
+    } else {
+        source.clone()
+    };
+
+    let agents = state.agents.list().map_err(|e| e.message.clone())?;
+    let agent_name = config.agent_name.as_deref().unwrap_or("Reviewer");
+    let agent = agents
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case(agent_name))
+        .or_else(|| agents.first())
+        .ok_or_else(|| "没有可用的 Agent".to_string())?
+        .clone();
+
+    let session_title_base = format!("审查: {}", review_root.display());
+
+    app.emit(
+        "review_progress",
+        serde_json::json!({ "step": "scan", "log": format!("正在扫描 {}...", review_root.display()) }),
+    )
+    .ok();
+
+    let targets = collect_review_targets(&review_root);
+    let scope = config.scope.as_deref().unwrap_or("all");
+    let filtered: Vec<_> = match scope {
+        "src" => targets
+            .into_iter()
+            .filter(|p| {
+                p.strip_prefix(&review_root)
+                    .map(|r| r.starts_with("src"))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        "changed" => {
+            let changed = get_git_changed_files(&review_root);
+            if changed.is_empty() {
+                targets
+            } else {
+                targets
+                    .into_iter()
+                    .filter(|p| changed.iter().any(|c| p.ends_with(c)))
+                    .collect()
+            }
+        }
+        _ => targets,
+    };
+
+    app.emit(
+        "review_progress",
+        serde_json::json!({
+            "step": "scan",
+            "log": format!("共 {} 个文件待审查（范围: {}）", filtered.len(), scope)
+        }),
+    )
+    .ok();
+
+    let settings = get_settings(&state).map_err(|e| e.message.clone())?;
+    let skill_instructions = state
+        .skills
+        .active_instructions()
+        .map_err(|e| e.message.clone())?;
+
+    let runtime = AgentRuntime {
+        agent_store: state.agents.clone(),
+        provider_store: state.providers.clone(),
+        tool_registry: state.tools.clone(),
+        session_manager: state.sessions.clone(),
+        permission_manager: state.permission.clone(),
+        budget: state.budget.clone(),
+        logs: state.logs.clone(),
+        context_window_overrides: settings.context_window_overrides.clone(),
+    };
+
+    let tree = build_project_tree(&review_root, &filtered, 200);
+
+    let file_list: Vec<String> = filtered
+        .iter()
+        .map(|p| to_relative_path(&review_root, p))
+        .collect();
+
+    // 每批独立 session：防止上下文跨批累积爆 context window
+    let batch_size = 20;
+    let mut all_issues: Vec<ReviewIssue> = Vec::new();
+    let total_batches = (file_list.len() + batch_size - 1) / batch_size;
+
+    for (batch_idx, batch) in file_list.chunks(batch_size).enumerate() {
+        app.emit(
+            "review_progress",
+            serde_json::json!({
+                "step": "review",
+                "log": format!("AI 审查第 {}/{} 批（{} 个文件）...", batch_idx + 1, total_batches, batch.len())
+            }),
+        )
+        .ok();
+
+        // 每批创建独立 session，保证 Agent 拥有干净的上下文窗口
+        let batch_session = state
+            .sessions
+            .create(
+                agent.id.clone(),
+                Some(format!("{} [{}/{}]", session_title_base, batch_idx + 1, total_batches)),
+            )
+            .map_err(|e| e.message.clone())?;
+
+        let file_paths = batch.join("\n");
+
+        let prompt = format!(
+            "你是一个专业的代码审查员。请审查以下文件，找出 bug、安全问题、\
+            性能问题、可维护性问题和最佳实践违反。\n\
+            \n## 项目结构\n```\n{tree}\n```\n\
+            \n## 本批待审查文件\n```\n{file_paths}\n```\n\
+            \n## 你的工作方式\n\
+            1. 使用 read_file 工具逐个读取上面列出的文件\n\
+            2. 分析每个文件的代码质量\n\
+            3. 如果需要理解上下文，可以用 search_code 或 grep_pattern 搜索相关引用\n\
+            4. 完成分析后，以 JSON 数组格式输出所有发现的问题\n\
+            \n## 输出格式\n\
+            最终回复必须是一个 JSON 数组，每个元素包含：\n\
+            - file: 相对路径\n\
+            - line: 行号\n\
+            - severity: \"error\" | \"warning\" | \"info\"\n\
+            - rule: 规则名称\n\
+            - message: 问题描述\n\
+            - suggestion: 修复建议\n\
+            \n如果没有问题，输出 []。\n\
+            \n重要：不要修改任何文件，只做分析。",
+        );
+
+        let result = runtime
+            .run_headless(
+                &agent,
+                &batch_session,
+                prompt,
+                skill_instructions.clone(),
+                Some(review_root.clone()),
+                AgentRunConfig::default(),
+            )
+            .await
+            .map_err(|e| e.message)?;
+
+        let parsed = parse_review_issues_from_llm(&result.content);
+        let count = parsed.len();
+        all_issues.extend(parsed);
+
+        // 批次完成后删除临时 session，释放上下文
+        let _ = state.sessions.delete(&batch_session.id);
+
+        app.emit(
+            "review_progress",
+            serde_json::json!({
+                "step": "review",
+                "log": format!("第 {}/{} 批完成，发现 {} 个问题", batch_idx + 1, total_batches, count)
+            }),
+        )
+        .ok();
+    }
+
+    app.emit(
+        "review_progress",
+        serde_json::json!({ "step": "heuristic", "log": "正在执行快速规则扫描补充..." }),
+    )
+    .ok();
+
+    let heuristic = collect_review_issues(&review_root.to_path_buf()).unwrap_or_default();
+    let heuristic_only: Vec<_> = heuristic
+        .into_iter()
+        .filter(|h| !all_issues.iter().any(|a| a.file == h.file && a.line == h.line))
+        .collect();
+    all_issues.extend(heuristic_only);
+
+    let final_issues = dedupe_and_sort_issues(all_issues);
+    app.emit(
+        "review_progress",
+        serde_json::json!({
+            "step": "complete",
+            "log": format!("审查完成，共发现 {} 个问题", final_issues.len())
+        }),
+    )
+    .ok();
+
+    app.emit("review_result", &final_issues)
+        .map_err(|e| e.to_string())?;
+
+    state
+        .logs
+        .record(
+            "project_review_ai",
+            serde_json::json!({
+                "path": review_root.display().to_string(),
+                "issueCount": final_issues.len(),
+                "batchCount": total_batches,
+            }),
+        )
+        .map_err(|e| e.message)?;
+
+    Ok(())
+}
+
+fn parse_review_issues_from_llm(content: &str) -> Vec<ReviewIssue> {
+    let mut clean_content = content.trim().to_string();
+    
+    // 移除经常出现的 markdown 大纲
+    if clean_content.starts_with("```json") {
+        clean_content = clean_content.trim_start_matches("```json").to_string();
+    } else if clean_content.starts_with("```") {
+        clean_content = clean_content.trim_start_matches("```").to_string();
+    }
+    if clean_content.ends_with("```") {
+        clean_content = clean_content.trim_end_matches("```").to_string();
+    }
+    clean_content = clean_content.trim().to_string();
+
+    if let Ok(issues) = serde_json::from_str::<Vec<ReviewIssue>>(&clean_content) {
+        return issues;
+    }
+
+    if let Some(start) = clean_content.find('[') {
+        // 先尝试匹配最前和最后的括号
+        if let Some(end) = clean_content.rfind(']') {
+            let json_slice = &clean_content[start..=end];
+            if let Ok(issues) = serde_json::from_str::<Vec<ReviewIssue>>(json_slice) {
+                return issues;
+            }
+            
+            // 如果中间有别的文本，尝试逐个截取
+            let mut stack = 0;
+            let mut current_end = start;
+            for (i, c) in clean_content[start..].char_indices() {
+                if c == '[' { stack += 1; }
+                if c == ']' { 
+                    stack -= 1;
+                    if stack == 0 {
+                        current_end = start + i;
+                        break;
+                    }
+                }
+            }
+            if current_end > start {
+                let json_slice = &clean_content[start..=current_end];
+                if let Ok(issues) = serde_json::from_str::<Vec<ReviewIssue>>(json_slice) {
+                    return issues;
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+fn build_project_tree(root: &Path, files: &[PathBuf], max_lines: usize) -> String {
+    let mut lines = Vec::new();
+    for (i, path) in files.iter().enumerate() {
+        if i >= max_lines {
+            lines.push(format!("... 还有 {} 个文件", files.len() - max_lines));
+            break;
+        }
+        let relative = to_relative_path(root, path);
+        lines.push(relative);
+    }
+    lines.join("\n")
+}
+
+fn get_git_changed_files(root: &Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .current_dir(root)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

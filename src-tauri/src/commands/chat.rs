@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, State};
@@ -16,6 +15,10 @@ use crate::state::{AppState, PendingPermissionContext};
 pub struct SessionRunConfig {
     pub provider_id: Option<String>,
     pub model: Option<String>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub stream: Option<bool>,
 }
 
 #[tauri::command]
@@ -397,26 +400,11 @@ async fn emit_chat_stream<R: tauri::Runtime>(
     content: &str,
     tool_results: &[serde_json::Value],
 ) -> Result<(), String> {
-    const CHUNK_SIZE: usize = 24;
-    for chunk in split_stream_chunks(content, CHUNK_SIZE) {
-        app.emit(
-            "chat_chunk",
-            serde_json::json!({
-                "sessionId": session_id,
-                "delta": chunk,
-                "done": false,
-                "toolResults": [],
-            }),
-        )
-        .map_err(|error| error.to_string())?;
-        tokio::time::sleep(Duration::from_millis(12)).await;
-    }
-
     app.emit(
         "chat_chunk",
         serde_json::json!({
             "sessionId": session_id,
-            "delta": "",
+            "delta": content,
             "done": true,
             "toolResults": tool_results,
         }),
@@ -424,32 +412,6 @@ async fn emit_chat_stream<R: tauri::Runtime>(
     .map_err(|error| error.to_string())?;
 
     Ok(())
-}
-
-fn split_stream_chunks(content: &str, chunk_size: usize) -> Vec<String> {
-    if content.is_empty() || chunk_size == 0 {
-        return Vec::new();
-    }
-
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut current_len = 0usize;
-
-    for ch in content.chars() {
-        current.push(ch);
-        current_len += 1;
-        if current_len >= chunk_size {
-            chunks.push(current);
-            current = String::new();
-            current_len = 0;
-        }
-    }
-
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-
-    chunks
 }
 
 fn save_pending_permission(
@@ -544,6 +506,9 @@ fn to_agent_run_config(config: &SessionRunConfig) -> AgentRunConfig {
         provider_id: config.provider_id.clone(),
         model: config.model.clone(),
         approved_tool_names: Vec::new(),
+        temperature: config.temperature,
+        top_p: config.top_p,
+        max_tokens: config.max_tokens,
     }
 }
 

@@ -141,6 +141,9 @@ impl AnthropicProvider {
         if let Some(temperature) = request.temperature {
             payload["temperature"] = serde_json::json!(temperature);
         }
+        if let Some(top_p) = request.top_p {
+            payload["top_p"] = serde_json::json!(top_p);
+        }
 
         if !request.tools.is_empty() {
             payload["tools"] = serde_json::json!(request
@@ -658,6 +661,7 @@ mod tests {
                 model: None,
                 max_tokens: Some(256),
                 temperature: Some(0.1),
+                top_p: None,
                 tools: vec![],
             },
             false,

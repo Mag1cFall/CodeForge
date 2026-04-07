@@ -5,7 +5,7 @@ import {
   ArrowUpRight, Clock, TrendingUp, Flame
 } from 'lucide-react';
 import { useAppPreferences } from '../lib/app-preferences';
-import { agentList, toolList, skillList, knowledgeRepos, logList, TraceLog } from '../lib/backend';
+import { agentList, toolList, toolUsageCounts, skillList, knowledgeRepos, logList, TraceLog } from '../lib/backend';
 import './Dashboard.css';
 
 interface StatItem {
@@ -106,16 +106,17 @@ export default function Dashboard() {
   const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
 
   const loadDashboard = useCallback(async () => {
-    const [agents, tools, skills, repos, logs] = await Promise.all([
+    const [agents, tools, counts, skills, repos, logs] = await Promise.all([
       agentList().catch(() => []),
       toolList().catch(() => []),
+      toolUsageCounts().catch(() => []),
       skillList().catch(() => []),
       knowledgeRepos().catch(() => []),
       logList(12).catch(() => []),
     ]);
 
     const activeAgents = agents.filter((item) => item.status === 'running').length;
-    const toolCalls = logs.filter((item) => item.kind === 'tool').length;
+    const toolCalls = counts.reduce((sum, item) => sum + item.calls, 0);
     const skillCount = skills.length;
     const knowledgeChunks = repos.reduce((sum, item) => sum + item.chunkCount, 0);
 

@@ -122,6 +122,9 @@ impl OpenAiCompatibleProvider {
         if let Some(temperature) = request.temperature {
             payload["temperature"] = serde_json::json!(temperature);
         }
+        if let Some(top_p) = request.top_p {
+            payload["top_p"] = serde_json::json!(top_p);
+        }
         if let Some(tools) = tools {
             payload["tools"] = serde_json::json!(tools);
             payload["tool_choice"] = serde_json::json!("auto");
@@ -765,6 +768,7 @@ mod tests {
                 model: None,
                 max_tokens: Some(256),
                 temperature: Some(0.1),
+                top_p: None,
                 tools: vec![crate::llm::model::ToolDefinition {
                     name: "read_file".into(),
                     description: "Read a file".into(),
@@ -864,6 +868,7 @@ mod tests {
                 model: Some(model),
                 max_tokens: Some(64),
                 temperature: Some(0.1),
+                top_p: None,
                 tools: vec![],
             })
             .await

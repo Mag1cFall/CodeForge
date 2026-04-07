@@ -757,10 +757,13 @@ fn is_likely_binary(bytes: &[u8]) -> bool {
         return true;
     }
 
-    let sample = &bytes[..bytes.len().min(1024)];
+    let sample = &bytes[..bytes.len().min(4096)];
     let non_text = sample
         .iter()
-        .filter(|byte| !matches!(byte, b'\n' | b'\r' | b'\t' | 0x20..=0x7E))
+        .filter(|byte| {
+            // 允许 UTF-8 高位字节（0x80..=0xFF）、换行、回车、制表符、可打印 ASCII
+            !matches!(byte, b'\n' | b'\r' | b'\t' | 0x20..=0x7E | 0x80..=0xFF)
+        })
         .count();
     non_text * 10 > sample.len() * 3
 }

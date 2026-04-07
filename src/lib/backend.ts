@@ -8,6 +8,7 @@ export interface AgentRecord {
   status: 'idle' | 'running' | 'stopped';
   model: string;
   tools: string[];
+  isSystem: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -153,6 +154,9 @@ export interface EmbeddingConfig {
 export interface SessionRunConfig {
   providerId?: string | null;
   model?: string | null;
+  temperature?: number | null;
+  topP?: number | null;
+  maxTokens?: number | null;
   stream?: boolean;
 }
 
@@ -208,6 +212,8 @@ export interface ToolUsageCount {
 
 export const agentList = () => invoke<AgentRecord[]>('agent_list');
 export const agentCreate = (config: AgentConfigInput) => invoke<AgentRecord>('agent_create', { config });
+export const agentUpdate = (id: string, config: AgentConfigInput) => invoke<AgentRecord>('agent_update', { id, config });
+export const agentDelete = (id: string) => invoke<void>('agent_delete', { id });
 export const agentStart = (id: string) => invoke<void>('agent_start', { id });
 export const agentStop = (id: string) => invoke<void>('agent_stop', { id });
 
@@ -251,9 +257,17 @@ export const settingsGet = () => invoke<AppSettings>('settings_get');
 export const settingsUpdate = (settings: AppSettings) => invoke<void>('settings_update', { settings });
 export const embeddingConfigGet = () => invoke<EmbeddingConfig>('embedding_config_get');
 
+export interface ReviewConfig {
+  path: string;
+  sandbox: boolean;
+  agentName?: string | null;
+  scope?: string | null;
+}
+
 export const projectOpen = (path: string) => invoke<ProjectInfo>('project_open', { path });
 export const projectClone = (gitUrl: string) => invoke<ProjectInfo>('project_clone', { gitUrl });
 export const projectReview = (path: string, sandbox: boolean) => invoke<void>('project_review', { path, sandbox });
+export const projectReviewAi = (config: ReviewConfig) => invoke<void>('project_review_ai', { config });
 
 export const listenChatChunk = (handler: (payload: ChatChunkEvent) => void): Promise<UnlistenFn> =>
   listen<ChatChunkEvent>('chat_chunk', (event) => {

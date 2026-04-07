@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Send, Bot, User, Loader2, Paperclip, Sparkles, RotateCcw, Copy, Wrench, Pencil,
   PanelRightOpen, PanelRightClose, Plus, MessageSquare, Gauge, Layers,
@@ -115,6 +116,7 @@ const toChatMessage = (message: SessionMessage): ChatMessage => {
 };
 
 export default function Chat() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [providerOptions, setProviderOptions] = useState<ProviderSummary[]>([]);
@@ -172,17 +174,9 @@ export default function Chat() {
     if (!target) {
       return;
     }
-    // Record current inline height
-    const currentHeight = target.style.height;
-    // Hide logic dynamically allowing shrink
     target.style.height = '38px';
     const next = Math.min(Math.max(target.scrollHeight, 38), 260);
-    // Best effort preserve manual user overrides, but ensure minimum
-    if (currentHeight && currentHeight !== '38px' && parseInt(currentHeight) > next) {
-      target.style.height = currentHeight;
-    } else {
-      target.style.height = `${next}px`;
-    }
+    target.style.height = `${next}px`;
   }, []);
 
   useEffect(() => {
@@ -343,6 +337,20 @@ export default function Chat() {
     void loadProviders();
     void loadSessions();
   }, [loadProviders, loadSessions]);
+
+  useEffect(() => {
+    if (searchParams.get('autofix') !== '1') return;
+    const stored = sessionStorage.getItem('codeforge_autofix_prompt');
+    if (!stored) return;
+    sessionStorage.removeItem('codeforge_autofix_prompt');
+    setSearchParams({}, { replace: true });
+    setInput(stored);
+    const timer = setTimeout(() => {
+      const btn = document.querySelector('.chat-send-btn') as HTMLButtonElement | null;
+      btn?.click();
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!selectedProvider) {
@@ -673,6 +681,9 @@ export default function Chat() {
       await chatSend(sessionId, text, {
         providerId: provider || undefined,
         model: model || undefined,
+        temperature: temperature,
+        topP: topP,
+        maxTokens: maxTokens,
         stream: streaming,
       });
     } catch (error) {

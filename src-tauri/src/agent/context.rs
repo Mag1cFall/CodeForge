@@ -11,8 +11,8 @@ pub struct ContextWindow {
 impl Default for ContextWindow {
     fn default() -> Self {
         Self {
-            max_chars: 8_000,
-            keep_recent: 8,
+            max_chars: 32_000,
+            keep_recent: 16,
         }
     }
 }

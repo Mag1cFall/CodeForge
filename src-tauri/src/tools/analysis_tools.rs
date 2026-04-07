@@ -87,8 +87,14 @@ pub fn find_code_smells(root: &Path) -> AppResult<Vec<serde_json::Value>> {
         for (line_number, line) in content.lines().enumerate() {
             for rule in &rules {
                 if rule.regex.is_match(line) {
+                    let relative_path = entry.path()
+                        .strip_prefix(root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                        
                     results.push(serde_json::json!({
-                        "file": entry.path().display().to_string(),
+                        "file": relative_path,
                         "line": line_number + 1,
                         "rule": rule.name,
                         "severity": rule.severity,
