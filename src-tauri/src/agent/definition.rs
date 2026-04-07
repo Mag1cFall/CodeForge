@@ -51,12 +51,21 @@ impl AgentStore {
 
     pub fn ensure_default_agent(&self) -> AppResult<()> {
         let existing = self.list()?;
-        if !existing.is_empty() {
-            return Ok(());
-        }
+        let existing_names: Vec<String> = existing.iter().map(|a| a.name.clone()).collect();
 
         for (config, system) in default_agents() {
-            self.create_internal(config, system)?;
+            if system && !existing_names.iter().any(|n| n.eq_ignore_ascii_case(&config.name)) {
+                self.create_internal(config, system)?;
+            }
+        }
+
+        // 首次启动（完全空表）时也补齐非系统 agent
+        if existing.is_empty() {
+            for (config, system) in default_agents() {
+                if !system {
+                    self.create_internal(config, system)?;
+                }
+            }
         }
         Ok(())
     }
@@ -242,6 +251,28 @@ fn status_string(status: &AgentStatus) -> &'static str {
 
 fn default_agents() -> Vec<(AgentConfigInput, bool)> {
     vec![
+        // ── 系统 Agent: Assistant ──
+        // 通用对话 Agent，拥有全部工具（读写文件、执行命令、代码分析）
+        // Chat 页面默认使用此 Agent
+        (AgentConfigInput {
+            name: "Assistant".into(),
+            instructions: Some("通用编程助手，可以读写文件、执行命令、分析和修改代码。".into()),
+            tools: vec![
+                "read_file".into(),
+                "write_file".into(),
+                "list_directory".into(),
+                "search_code".into(),
+                "grep_pattern".into(),
+                "apply_patch".into(),
+                "run_shell".into(),
+                "run_tests".into(),
+                "analyze_ast".into(),
+                "check_complexity".into(),
+                "find_code_smells".into(),
+                "suggest_refactor".into(),
+            ],
+            model: "gpt-5.4-mini".into(),
+        }, true),
         // ── 系统 Agent: Reviewer ──
         // 只读工具，禁止 write_file / apply_patch / run_shell 等写入和执行类工具
         // 审查场景必须保证零副作用，仅做分析不做修改

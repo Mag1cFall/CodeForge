@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, State};
@@ -468,10 +468,26 @@ fn save_pending_permission(
 
 fn load_workspace_root(state: &AppState) -> Result<Option<PathBuf>, String> {
     let Some(value) = state.db.get_json("app_settings").map_err(|error| error.message.clone())? else {
-        return Ok(None);
+        return Ok(Some(ensure_workspace_dir(&state.config.sandbox_root)));
     };
     let settings: AppSettings = serde_json::from_str(&value).map_err(|error| error.to_string())?;
-    Ok(settings.project_path.map(PathBuf::from))
+    if let Some(path_str) = settings.project_path {
+        let path = PathBuf::from(&path_str);
+        if path.is_dir() {
+            return Ok(Some(path));
+        }
+        // 配置路径不存在，尝试创建
+        if std::fs::create_dir_all(&path).is_ok() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(Some(ensure_workspace_dir(&state.config.sandbox_root)))
+}
+
+fn ensure_workspace_dir(sandbox_root: &Path) -> PathBuf {
+    let workspace = sandbox_root.join("default-workspace");
+    let _ = std::fs::create_dir_all(&workspace);
+    workspace
 }
 
 fn save_session_run_config(

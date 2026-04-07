@@ -572,7 +572,7 @@ export default function Chat() {
   const handleCreateSession = useCallback(async () => {
     try {
       const agents = await agentList();
-      const defaultAgent = (agents ?? [])[0];
+      const defaultAgent = (agents ?? []).find(a => a.name === 'Assistant') ?? (agents ?? [])[0];
       if (!defaultAgent) {
         return;
       }
@@ -636,7 +636,7 @@ export default function Chat() {
     if (!sessionId) {
       try {
         const agents = await agentList();
-        const defaultAgent = (agents ?? [])[0];
+        const defaultAgent = (agents ?? []).find(a => a.name === 'Assistant') ?? (agents ?? [])[0];
         if (!defaultAgent) {
           return;
         }

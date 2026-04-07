@@ -64,10 +64,27 @@ impl SandboxManager {
         let mut copied_directories = 0usize;
         let mut skipped_symlinks = 0usize;
 
+        const SKIP_DIRS: &[&str] = &[
+            ".git", "node_modules", "target", "dist", "build",
+            ".next", "coverage", "tmp", "temp", ".idea", ".vscode",
+        ];
+
         for entry in WalkDir::new(&source_root)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|entry| !entry.path().starts_with(&sandbox_root))
+            .filter_entry(|entry| {
+                let path = entry.path();
+                if path.starts_with(&sandbox_root) {
+                    return false;
+                }
+                if entry.file_type().is_dir() {
+                    let name = entry.file_name().to_string_lossy();
+                    if SKIP_DIRS.iter().any(|d| *d == name) {
+                        return false;
+                    }
+                }
+                true
+            })
         {
             let entry = entry.map_err(|error| AppError::new(error.to_string()))?;
             let path = entry.path();
